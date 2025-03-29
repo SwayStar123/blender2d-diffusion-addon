@@ -1575,7 +1575,34 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             self.workflow[self.video_path_node_id]["inputs"]["video"] = abs_video_path
             self.workflow[self.prompt_node_id]["inputs"][
                 "text"
-            ] = bpy.context.scene.comfyui_props.user_prompt  # Get from scene props
+            ] = bpy.context.scene.comfyui_props.user_prompt # Get from scene props
+
+            # --- *** Get and Apply ControlNet Strengths *** ---
+            # Read values from Scene Properties (safe to access bpy.context from thread?)
+            # It's generally discouraged, but reading simple properties *might* be okay.
+            # A safer alternative would be to pass these values from invoke/modal.
+            # Let's stick to reading directly for now, but be aware.
+            depth_strength = bpy.context.scene.comfyui_props.controlnet_depth_strength
+            pose_strength = bpy.context.scene.comfyui_props.controlnet_pose_strength
+
+            # Node IDs identified from your workflow JSON:
+            depth_apply_node_id = "114"
+            pose_apply_node_id = "117"
+
+            # Update Depth ControlNet strength
+            if depth_apply_node_id in self.workflow and "inputs" in self.workflow[depth_apply_node_id]:
+                self.workflow[depth_apply_node_id]["inputs"]["strength"] = depth_strength
+                print(f"  Set Depth CN Strength (Node {depth_apply_node_id}) to: {depth_strength}")
+            else:
+                print(f"  Warning: Depth CN Apply Node '{depth_apply_node_id}' or its 'inputs' not found in workflow.")
+
+            # Update Pose ControlNet strength
+            if pose_apply_node_id in self.workflow and "inputs" in self.workflow[pose_apply_node_id]:
+                self.workflow[pose_apply_node_id]["inputs"]["strength"] = pose_strength
+                print(f"  Set Pose CN Strength (Node {pose_apply_node_id}) to: {pose_strength}")
+            else:
+                 print(f"  Warning: Pose CN Apply Node '{pose_apply_node_id}' or its 'inputs' not found in workflow.")
+            # --- *** END CONTROLNET STRENGTH UPDATE *** ---
 
             # --- Update internal status ---
             self._thread_status = (
@@ -2529,6 +2556,12 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
         col.separator()
         col.prop(scene_props, "frame_rate")
 
+        col.separator()
+        box_cn = col.box()
+        box_cn.label(text="ControlNet Strengths:")
+        box_cn.prop(scene_props, "controlnet_depth_strength")
+        box_cn.prop(scene_props, "controlnet_pose_strength")
+
         layout.separator()
         # --- Preferences Button ---
         layout.operator(
@@ -2574,6 +2607,24 @@ class ComfyUISceneProperties(bpy.types.PropertyGroup):
         default=8,  # Match default in VHS_VideoCombine if relevant?
         min=1,
         max=120,
+    )
+    controlnet_depth_strength: bpy.props.FloatProperty(
+        name="Depth Strength",
+        description="Strength of the Depth ControlNet (Node 114)",
+        default=0.5, # Matches the default in your current workflow JSON for node 114
+        min=0.0,
+        max=2.0,      # Allow values slightly above 1.0 if needed
+        subtype='FACTOR', # Gives a nice 0-1 slider visually, but allows range up to max
+        precision=2,
+    )
+    controlnet_pose_strength: bpy.props.FloatProperty(
+        name="Pose Strength",
+        description="Strength of the OpenPose ControlNet (Node 117)",
+        default=1.0, # Matches the default in your current workflow JSON for node 117
+        min=0.0,
+        max=2.0,
+        subtype='FACTOR',
+        precision=2,
     )
 
 
