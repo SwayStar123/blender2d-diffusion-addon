@@ -77,7 +77,7 @@ COMFYUI_WORKFLOW_JSON = """
   },
   "3": {
     "inputs": {
-      "text": "PLACEHOLDER_PROMPT",
+      "text": "1girl, blonde, tying a jacket around her neck",
       "clip": [
         "110",
         1
@@ -90,7 +90,7 @@ COMFYUI_WORKFLOW_JSON = """
   },
   "6": {
     "inputs": {
-      "text": "ugly, deformed, bad lighting, blurry, text, watermark, extra hands, bad quality, deformed hands, deformed fingers, nostalgic, drawing, painting, bad anatomy, worst quality, blurry, blurred, normal quality, bad focus, tripod, three legs, weird legs, short legs",
+      "text": "ugly, deformed, bad lighting, blurry, text, watermark, extra hands, bad quality, deformed hands, deformed fingers, nostalgic, drawing, painting, bad anatomy, worst quality, blurry, blurred, normal quality, bad focus",
       "clip": [
         "110",
         1
@@ -103,7 +103,7 @@ COMFYUI_WORKFLOW_JSON = """
   },
   "7": {
     "inputs": {
-      "seed": 380620886430907,
+      "seed": 546052001170593,
       "steps": 25,
       "cfg": 7,
       "sampler_name": "euler_ancestral",
@@ -114,15 +114,15 @@ COMFYUI_WORKFLOW_JSON = """
         0
       ],
       "positive": [
-        "117",
+        "114",
         0
       ],
       "negative": [
-        "117",
+        "114",
         1
       ],
       "latent_image": [
-        "56",
+        "119",
         0
       ]
     },
@@ -188,22 +188,6 @@ COMFYUI_WORKFLOW_JSON = """
       "title": "Upscale Image"
     }
   },
-  "56": {
-    "inputs": {
-      "pixels": [
-        "53",
-        0
-      ],
-      "vae": [
-        "2",
-        0
-      ]
-    },
-    "class_type": "VAEEncode",
-    "_meta": {
-      "title": "VAE Encode"
-    }
-  },
   "70": {
     "inputs": {
       "control_net_name": "control_v11f1p_sd15_depth.pth"
@@ -216,62 +200,7 @@ COMFYUI_WORKFLOW_JSON = """
   "92": {
     "inputs": {
       "images": [
-        "102",
-        0
-      ]
-    },
-    "class_type": "PreviewImage",
-    "_meta": {
-      "title": "Preview Image"
-    }
-  },
-  "97": {
-    "inputs": {
-      "control_net_name": "control_v11p_sd15_openpose.pth"
-    },
-    "class_type": "ControlNetLoaderAdvanced",
-    "_meta": {
-      "title": "Load Advanced ControlNet Model 🛂🅐🅒🅝"
-    }
-  },
-  "100": {
-    "inputs": {
-      "detect_hand": "enable",
-      "detect_body": "enable",
-      "detect_face": "enable",
-      "resolution": 512,
-      "bbox_detector": "yolox_l.onnx",
-      "pose_estimator": "dw-ll_ucoco_384_bs5.torchscript.pt",
-      "scale_stick_for_xinsr_cn": "disable",
-      "image": [
-        "53",
-        0
-      ]
-    },
-    "class_type": "DWPreprocessor",
-    "_meta": {
-      "title": "DWPose Estimator"
-    }
-  },
-  "102": {
-    "inputs": {
-      "a": 6.283185307179586,
-      "bg_threshold": 0.1,
-      "resolution": 512,
-      "image": [
-        "53",
-        0
-      ]
-    },
-    "class_type": "MiDaS-DepthMapPreprocessor",
-    "_meta": {
-      "title": "MiDaS Depth Map"
-    }
-  },
-  "103": {
-    "inputs": {
-      "images": [
-        "100",
+        "121",
         0
       ]
     },
@@ -394,7 +323,7 @@ COMFYUI_WORKFLOW_JSON = """
         0
       ],
       "image": [
-        "102",
+        "121",
         0
       ]
     },
@@ -417,38 +346,70 @@ COMFYUI_WORKFLOW_JSON = """
   },
   "116": {
     "inputs": {
-      "model_name": "v3_sd15_mm.ckpt"
+      "model_name": "temporaldiff-v1-animatediff.safetensors"
     },
     "class_type": "ADE_LoadAnimateDiffModel",
     "_meta": {
       "title": "Load AnimateDiff Model 🎭🅐🅓②"
     }
   },
-  "117": {
+  "119": {
     "inputs": {
-      "strength": 1,
-      "start_percent": 0,
-      "end_percent": 1,
-      "positive": [
-        "114",
-        0
-      ],
-      "negative": [
-        "114",
+      "width": 1024,
+      "height": 576,
+      "batch_size": [
+        "107",
         1
-      ],
-      "control_net": [
-        "97",
-        0
-      ],
+      ]
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "120": {
+    "inputs": {
       "image": [
-        "100",
+        "53",
         0
       ]
     },
-    "class_type": "ACN_AdvancedControlNetApply",
+    "class_type": "ImageInvert",
     "_meta": {
-      "title": "Apply Advanced ControlNet 🛂🅐🅒🅝"
+      "title": "Invert Image"
+    }
+  },
+  "121": {
+    "inputs": {
+      "condition": "A is TRUE",
+      "require_inputs": true,
+      "NOT": false,
+      "custom_expression": "",
+      "A": [
+        "123",
+        0
+      ],
+      "TRUE_IN": [
+        "120",
+        0
+      ],
+      "FALSE_IN": [
+        "53",
+        0
+      ]
+    },
+    "class_type": "IfConditionSelector",
+    "_meta": {
+      "title": "🔀 IF (Condition Selector)"
+    }
+  },
+  "123": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Invert input for depth"
     }
   }
 }
@@ -1583,11 +1544,11 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             # A safer alternative would be to pass these values from invoke/modal.
             # Let's stick to reading directly for now, but be aware.
             depth_strength = bpy.context.scene.comfyui_props.controlnet_depth_strength
-            pose_strength = bpy.context.scene.comfyui_props.controlnet_pose_strength
+            invert_depth = bpy.context.scene.comfyui_props.invert_depth_input
 
             # Node IDs identified from your workflow JSON:
             depth_apply_node_id = "114"
-            pose_apply_node_id = "117"
+            depth_invert_node_id = "123"
 
             # Update Depth ControlNet strength
             if depth_apply_node_id in self.workflow and "inputs" in self.workflow[depth_apply_node_id]:
@@ -1595,13 +1556,14 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                 print(f"  Set Depth CN Strength (Node {depth_apply_node_id}) to: {depth_strength}")
             else:
                 print(f"  Warning: Depth CN Apply Node '{depth_apply_node_id}' or its 'inputs' not found in workflow.")
-
-            # Update Pose ControlNet strength
-            if pose_apply_node_id in self.workflow and "inputs" in self.workflow[pose_apply_node_id]:
-                self.workflow[pose_apply_node_id]["inputs"]["strength"] = pose_strength
-                print(f"  Set Pose CN Strength (Node {pose_apply_node_id}) to: {pose_strength}")
+                
+            # Update Depth Inversion setting
+            if depth_invert_node_id in self.workflow and "inputs" in self.workflow[depth_invert_node_id]:
+                self.workflow[depth_invert_node_id]["inputs"]["value"] = invert_depth
+                print(f"  Set Depth Inversion (Node {depth_invert_node_id}) to: {invert_depth}")
             else:
-                 print(f"  Warning: Pose CN Apply Node '{pose_apply_node_id}' or its 'inputs' not found in workflow.")
+                print(f"  Warning: Depth Inversion Node '{depth_invert_node_id}' or its 'inputs' not found in workflow.")
+
             # --- *** END CONTROLNET STRENGTH UPDATE *** ---
 
             # --- Update internal status ---
@@ -2560,7 +2522,7 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
         box_cn = col.box()
         box_cn.label(text="ControlNet Strengths:")
         box_cn.prop(scene_props, "controlnet_depth_strength")
-        box_cn.prop(scene_props, "controlnet_pose_strength")
+        box_cn.prop(scene_props, "invert_depth_input")
 
         layout.separator()
         # --- Preferences Button ---
@@ -2610,21 +2572,15 @@ class ComfyUISceneProperties(bpy.types.PropertyGroup):
     )
     controlnet_depth_strength: bpy.props.FloatProperty(
         name="Depth Strength",
-        description="Strength of the Depth ControlNet (Node 114)",
-        default=0.5, # Matches the default in your current workflow JSON for node 114
+        description="Strength of the depth controlnet effect",
+        default=0.4,
         min=0.0,
-        max=2.0,      # Allow values slightly above 1.0 if needed
-        subtype='FACTOR', # Gives a nice 0-1 slider visually, but allows range up to max
-        precision=2,
+        max=1.0,
     )
-    controlnet_pose_strength: bpy.props.FloatProperty(
-        name="Pose Strength",
-        description="Strength of the OpenPose ControlNet (Node 117)",
-        default=1.0, # Matches the default in your current workflow JSON for node 117
-        min=0.0,
-        max=2.0,
-        subtype='FACTOR',
-        precision=2,
+    invert_depth_input: bpy.props.BoolProperty(
+        name="Invert Depth",
+        description="Invert the depth input for the controlnet",
+        default=False
     )
 
 
