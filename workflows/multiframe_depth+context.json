@@ -139,15 +139,6 @@
       "title": "WanVideo VACE Encode"
     }
   },
-  "64": {
-    "inputs": {
-      "image": "input_00150.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Load Image: Start"
-    }
-  },
   "70": {
     "inputs": {
       "steps": 15,
@@ -215,14 +206,14 @@
   },
   "74": {
     "inputs": {
-      "width": 480,
-      "height": 352,
+      "width": 960,
+      "height": 720,
       "upscale_method": "lanczos",
       "keep_proportion": false,
       "divisible_by": 2,
       "crop": "disabled",
       "image": [
-        "64",
+        "203",
         0
       ]
     },
@@ -265,15 +256,6 @@
       "title": "WanVideo VACE Start To End Frame"
     }
   },
-  "112": {
-    "inputs": {
-      "image": "input_00192.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Load Image: End"
-    }
-  },
   "113": {
     "inputs": {
       "images": [
@@ -300,14 +282,14 @@
   },
   "115": {
     "inputs": {
-      "width": 480,
-      "height": 352,
+      "width": 960,
+      "height": 720,
       "upscale_method": "lanczos",
       "keep_proportion": false,
       "divisible_by": 2,
       "crop": "disabled",
       "image": [
-        "112",
+        "204",
         0
       ]
     },
@@ -365,10 +347,10 @@
       "force_rate": 0,
       "custom_width": 0,
       "custom_height": 0,
-      "frame_load_cap": 40,
-      "skip_first_frames": 150,
+      "frame_load_cap": 41,
+      "skip_first_frames": 0,
       "select_every_nth": 1,
-      "format": "AnimateDiff"
+      "format": "Wan"
     },
     "class_type": "VHS_LoadVideo",
     "_meta": {
@@ -410,8 +392,8 @@
   },
   "188": {
     "inputs": {
-      "width": 480,
-      "height": 352,
+      "width": 960,
+      "height": 720,
       "upscale_method": "lanczos",
       "keep_proportion": false,
       "divisible_by": 2,
@@ -594,6 +576,41 @@
     "class_type": "IfConditionSelector",
     "_meta": {
       "title": "🔀 IF (Condition Selector)"
+    }
+  },
+  "203": {
+    "inputs": {
+      "image": "D://MyStuff/Programming/Rust/colored_bad_apple/frames/original/input_00150.png",
+      "custom_width": 0,
+      "custom_height": 0
+    },
+    "class_type": "VHS_LoadImagePath",
+    "_meta": {
+      "title": "Load End Image (Path) 🎥🅥🅗🅢"
+    }
+  },
+  "204": {
+    "inputs": {
+      "image": "D://MyStuff/Programming/Rust/colored_bad_apple/frames/original/input_00192.png",
+      "custom_width": 0,
+      "custom_height": 0
+    },
+    "class_type": "VHS_LoadImagePath",
+    "_meta": {
+      "title": "Load End Image (Path) 🎥🅥🅗🅢"
+    }
+  },
+  "205": {
+    "inputs": {
+      "filename_prefix": "BlenderOutputs",
+      "images": [
+        "138",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
     }
   }
 }

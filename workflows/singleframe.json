@@ -49,15 +49,6 @@
       "title": "CLIP Text Encode (Prompt)"
     }
   },
-  "5": {
-    "inputs": {
-      "image": "input_00159.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Load Image"
-    }
-  },
   "6": {
     "inputs": {
       "strength": 1,
@@ -174,7 +165,7 @@
   "15": {
     "inputs": {
       "image": [
-        "5",
+        "40",
         0
       ]
     },
@@ -347,7 +338,7 @@
   },
   "35": {
     "inputs": {
-      "filename_prefix": "ComfyUI",
+      "filename_prefix": "BlenderOutput",
       "images": [
         "20",
         0
@@ -373,7 +364,7 @@
         0
       ],
       "FALSE_IN": [
-        "5",
+        "40",
         0
       ]
     },
@@ -389,6 +380,17 @@
     "class_type": "PrimitiveBoolean",
     "_meta": {
       "title": "Invert input"
+    }
+  },
+  "40": {
+    "inputs": {
+      "image": "D://MyStuff/Programming/Rust/colored_bad_apple/frames/original/input_00152.png",
+      "custom_width": 0,
+      "custom_height": 0
+    },
+    "class_type": "VHS_LoadImagePath",
+    "_meta": {
+      "title": "Load Image (Path) 🎥🅥🅗🅢"
     }
   }
 }

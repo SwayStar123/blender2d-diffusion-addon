@@ -164,7 +164,7 @@
       "divisible_by": 2,
       "crop": "disabled",
       "image": [
-        "181",
+        "188",
         0
       ],
       "get_image_size": [
@@ -239,21 +239,12 @@
       "title": "WanVideo TextEncode"
     }
   },
-  "169": {
-    "inputs": {
-      "image": "image_2025-04-07_134745379.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Load Image: Reference"
-    }
-  },
   "172": {
     "inputs": {
       "steps": 15,
       "cfg": 4.000000000000001,
       "shift": 5,
-      "seed": 5,
+      "seed": 6,
       "force_offload": true,
       "scheduler": "unipc",
       "riflex_freq_index": 0,
@@ -290,22 +281,6 @@
       "title": "WanVideo Sampler"
     }
   },
-  "173": {
-    "inputs": {
-      "video": "original_bad_apple.mp4",
-      "force_rate": 0,
-      "custom_width": 0,
-      "custom_height": 0,
-      "frame_load_cap": 40,
-      "skip_first_frames": 150,
-      "select_every_nth": 1,
-      "format": "AnimateDiff"
-    },
-    "class_type": "VHS_LoadVideo",
-    "_meta": {
-      "title": "Load Video (Upload) 🎥🅥🅗🅢"
-    }
-  },
   "176": {
     "inputs": {
       "width": 960,
@@ -315,7 +290,7 @@
       "divisible_by": 2,
       "crop": "disabled",
       "image": [
-        "173",
+        "189",
         0
       ]
     },
@@ -344,25 +319,6 @@
     "class_type": "VHS_VideoCombine",
     "_meta": {
       "title": "Video Combine 🎥🅥🅗🅢"
-    }
-  },
-  "181": {
-    "inputs": {
-      "left": 0,
-      "right": 0,
-      "top": 0,
-      "bottom": 0,
-      "extra_padding": 512,
-      "pad_mode": "color",
-      "color": "255,255,255",
-      "image": [
-        "169",
-        0
-      ]
-    },
-    "class_type": "ImagePadKJ",
-    "_meta": {
-      "title": "ImagePad KJ"
     }
   },
   "185": {
@@ -408,6 +364,46 @@
     "class_type": "IfConditionSelector",
     "_meta": {
       "title": "🔀 IF (Condition Selector)"
+    }
+  },
+  "188": {
+    "inputs": {
+      "image": "input/image_2025-04-07_134745379.png",
+      "custom_width": 0,
+      "custom_height": 0
+    },
+    "class_type": "VHS_LoadImagePath",
+    "_meta": {
+      "title": "Load Image (Path) 🎥🅥🅗🅢"
+    }
+  },
+  "189": {
+    "inputs": {
+      "video": " D:/MyStuff/Programming/Rust/colored_bad_apple/original_bad_apple.mp4",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 41,
+      "skip_first_frames": 0,
+      "select_every_nth": 1,
+      "format": "Wan"
+    },
+    "class_type": "VHS_LoadVideoPath",
+    "_meta": {
+      "title": "Load Video (Path) 🎥🅥🅗🅢"
+    }
+  },
+  "190": {
+    "inputs": {
+      "filename_prefix": "BlenderOutputs",
+      "images": [
+        "167",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
     }
   }
 }
