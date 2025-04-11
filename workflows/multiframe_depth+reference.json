@@ -386,7 +386,7 @@
       "frame_load_cap": 41,
       "skip_first_frames": 0,
       "select_every_nth": 1,
-      "format": "Wan"
+      "format": "AnimateDiff"
     },
     "class_type": "VHS_LoadVideoPath",
     "_meta": {

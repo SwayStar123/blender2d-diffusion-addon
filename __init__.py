@@ -111,6 +111,10 @@ WORKFLOW_NODE_IDS = {
         "INVERT_BOOL": "186",       # PrimitiveBoolean (for input VIDEO inversion)
         "OUTPUT_DECODE": "205",     # SaveImage (produces final images)
         # "VIDEO_COMBINE": "139",     # VHS_VideoCombine (use DECODE for WS)
+        "VACE_STARTEND_1": "111",   # Need to set num_frames here
+        "VACE_STARTEND_2": "194",   # Need to set num_frames here
+        "VACE_STARTEND_3": "195",   # Need to set num_frames here
+
     }
 }
 
@@ -779,6 +783,12 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                      else: print(f"  Warning: Use Succeeding Bool Node ID '{use_succ_node_id}' not found/invalid.")
                 else: print(f"  Warning: Use Succeeding Bool Node ID not defined.")
 
+                if "VACE_STARTEND_1" in self.node_ids and "VACE_STARTEND_2" in self.node_ids and "VACE_STARTEND_3" in self.node_ids:
+                    num_frames = len(self.frames_to_process) + int(self.scene_use_preceding) + int(self.scene_use_succeeding)
+                    self.workflow[self.node_ids["VACE_STARTEND_1"]]["inputs"]["num_frames"] = num_frames
+                    self.workflow[self.node_ids["VACE_STARTEND_2"]]["inputs"]["num_frames"] = num_frames
+                    self.workflow[self.node_ids["VACE_STARTEND_3"]]["inputs"]["num_frames"] = num_frames
+                else: print(f"  Warning: VACE_STARTEND Node IDs not defined")
 
             # --- 4) Queue and Wait ---
             self._thread_status = f"Queueing ComfyUI ({self.workflow_type})"
