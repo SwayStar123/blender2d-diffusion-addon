@@ -57,7 +57,7 @@ except (ImportError, AttributeError) as e:
 bl_info = {
     "name": "ComfyUI GPencil Integration v3", # Renamed and versioned
     "author": "Your Name (Modified for Dynamic Workflows + GPencil)",
-    "version": (3, 0, 0),
+    "version": (3, 1, 0),
     "blender": (3, 3, 0),
     "location": "View3D > Sidebar > ComfyUI",
     "description": (
@@ -87,6 +87,7 @@ WORKFLOW_NODE_IDS = {
     "SINGLE": {
         "PROMPT": "4",              # CLIPTextEncode (Positive)
         "NEGATIVE_PROMPT": "13",    # CLIPTextEncode (Negative) - Optional if needed elsewhere
+        "LORA_LOADER": "3",         # LoraLoader (for setting lora)
         "INPUT_IMAGE": "40",        # VHS_LoadImagePath (for the single frame)
         "CNET_STRENGTH": "6",       # ControlNetApplyAdvanced (contains strength input)
         "INVERT_BOOL": "37",        # PrimitiveBoolean (for input image inversion)
@@ -129,6 +130,14 @@ class ComfyUIAddonPreferences(bpy.types.AddonPreferences):
         description="Address of your running ComfyUI server (e.g., http://127.0.0.1:8188)",
         default="http://127.0.0.1:8188",
     )
+
+    lora_directory: bpy.props.StringProperty(
+        name="LoRA Models Directory",
+        description="Directory containing LoRA (.safetensors, .pt) files",
+        subtype='DIR_PATH',
+        default=r"D:\MyStuff\StableDiffusion\StabilityMatrix\Data\Models\Lora"
+    )
+
     workflow_dir_info: bpy.props.StringProperty(
         name="Workflow Directory Info",
         description="Location where the addon expects workflow JSON files",
@@ -141,6 +150,11 @@ class ComfyUIAddonPreferences(bpy.types.AddonPreferences):
         layout.label(text="ComfyUI Server Settings:")
         layout.prop(self, "comfyui_address")
         layout.separator()
+
+        layout.label(text="Model Paths:")
+        layout.prop(self, "lora_directory")
+        layout.separator()
+
         box = layout.box()
         box.label(text="Dependencies & Notes:", icon="INFO")
         box.label(text="- Requires an ACTIVE Grease Pencil object selected.")
@@ -618,6 +632,9 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
     previous_mode = None
     final_result = None
     output_img_paths = [] # Store paths of images SAVED by the addon locally
+    selected_lora_name: bpy.props.StringProperty(options={"SKIP_SAVE"})
+    selected_lora_strength_model: bpy.props.FloatProperty(options={"SKIP_SAVE"}) 
+    selected_lora_strength_clip: bpy.props.FloatProperty(options={"SKIP_SAVE"})
     server_address = ""
     target_gp_object_name: bpy.props.StringProperty(options={"SKIP_SAVE"})
 
@@ -632,6 +649,13 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
     preceding_frame_path: bpy.props.StringProperty(options={"SKIP_SAVE"})
     succeeding_frame_path: bpy.props.StringProperty(options={"SKIP_SAVE"})
 
+    def _get_first_lora_fallback(self, context):
+        """Gets the filename of the first available LoRA as a fallback."""
+        items = get_lora_items(self, context) # Call the dynamic enum function
+        for identifier, name, description in items:
+            if identifier not in ["NONE", "INVALID_PATH", "SCAN_ERROR"]:
+                return identifier # Return the first valid filename
+        return None # No valid LoRAs found
 
     @classmethod
     def poll(cls, context):
@@ -652,6 +676,18 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         # Check workflow files exist (basic check)
         if not os.path.isdir(WORKFLOW_DIR): cls.poll_message_set(f"Workflow dir missing: {WORKFLOW_DIR}"); return False
         # Could add check for specific needed file based on current UI state, but might be overkill for poll
+
+        scene_props = context.scene.comfyui_props
+        if scene_props.frame_mode == "CURRENT":
+            prefs = context.preferences.addons[__name__].preferences
+            lora_dir = prefs.lora_directory
+            if not lora_dir or not os.path.isdir(lora_dir):
+                cls.poll_message_set("LoRA directory invalid/not set in preferences")
+                return False
+            # Check if selected lora is an error indicator
+            if scene_props.selected_lora in ["INVALID_PATH", "SCAN_ERROR"]:
+                 cls.poll_message_set(f"LoRA Selection Error: {scene_props.selected_lora}")
+                 return False
 
         return True
 
@@ -729,6 +765,36 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                       print(f"  Set ControlNet Strength (Node {cn_strength_node_id}): {self.scene_depth_strength}")
                  else: print(f"  Warning: CNet Strength Node ID '{cn_strength_node_id}' not found/invalid.")
 
+            # --- Handle LoRA for SINGLE frame ---
+            if self.workflow_type == "SINGLE":
+                lora_node_id = self.node_ids.get("LORA_LOADER")
+                if lora_node_id and lora_node_id in self.workflow:
+                    lora_inputs = self.workflow[lora_node_id]["inputs"]
+                    # Check if a valid LoRA was selected (not NONE or an error indicator)
+                    if self.selected_lora_name and self.selected_lora_name != "NONE":
+                        lora_inputs["lora_name"] = self.selected_lora_name
+                        lora_inputs["strength_model"] = self.selected_lora_strength_model
+                        lora_inputs["strength_clip"] = self.selected_lora_strength_clip
+                        print(f"  Using LoRA (Node {lora_node_id}): {self.selected_lora_name} (Str M:{self.selected_lora_strength_model:.2f} C:{self.selected_lora_strength_clip:.2f})")
+                    else:
+                        # No LoRA selected or an error occurred - Disable LoRA effect
+                        lora_inputs["strength_model"] = 0.0
+                        lora_inputs["strength_clip"] = 0.0
+                        # Keep a default lora_name, ComfyUI might require *something*
+                        # If the original workflow had a default, it will be used.
+                        # Otherwise, keep whatever was loaded. We could try setting a fallback if needed.
+                        print(f"  LoRA Disabled (Node {lora_node_id}): Setting strength to 0.0")
+                        # Optional: Add a fallback name if lora_name might be missing
+                        # if "lora_name" not in lora_inputs or not lora_inputs["lora_name"]:
+                        #     fallback_lora = self._get_first_lora_fallback(bpy.context) # Need context here? Maybe pass it or get during invoke
+                        #     if fallback_lora:
+                        #         lora_inputs["lora_name"] = fallback_lora
+                        #         print(f"    Set fallback LoRA name: {fallback_lora}")
+                        #     else:
+                        #         print(f"    Warning: Could not set a fallback LoRA name.")
+
+                else:
+                    print(f"  Warning: LoRA Loader Node ID '{lora_node_id}' not found in workflow.")
 
             # --- 3) Set Workflow-Specific Parameters ---
             if self.workflow_type == "MULTI_REF":
@@ -1118,6 +1184,9 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         self.scene_reference_image_path = bpy.path.abspath(scene_props.reference_image_path) if scene_props.reference_image_path else ""
         self.scene_use_preceding = scene_props.use_preceding_frame
         self.scene_use_succeeding = scene_props.use_succeeding_frame
+        self.selected_lora_name = scene_props.selected_lora
+        self.selected_lora_strength_model = scene_props.lora_strength_model
+        self.selected_lora_strength_clip = scene_props.lora_strength_clip
 
         # Store current state
         self.original_frame = context.scene.frame_current
@@ -1167,6 +1236,13 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         print(f"Frames to process: {self.frames_to_process}")
         if preceding_frame_num is not None: print(f"Preceding frame: {preceding_frame_num}")
         if succeeding_frame_num is not None: print(f"Succeeding frame: {succeeding_frame_num}")
+
+        if self.workflow_type == "SINGLE":
+            if self.selected_lora_name in ["INVALID_PATH", "SCAN_ERROR"]:
+                 self.report({"ERROR"}, f"Cannot run: Invalid LoRA setting ({self.selected_lora_name}). Check addon preferences or directory.")
+                 return {"CANCELLED"}
+             # Optional: Check if NONE is selected but the workflow absolutely requires a LoRA file name
+             # For now, we assume disabling strength is enough.
 
         # --- Load Workflow JSON ---
         workflow_filename = WORKFLOW_FILES.get(self.workflow_type)
@@ -1459,7 +1535,7 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
             row.prop(scene_props, "frame_end", text="End")
             scene = context.scene
             box.label( text=f"(Scene: {scene.frame_start}-{scene.frame_end})", icon="TIME")
-            box.prop(scene_props, "frame_rate") # Move frame rate here? Makes sense.
+            box.prop(scene_props, "frame_rate")
 
             # --- Context Frame Options ---
             box_context = box.box()
@@ -1481,12 +1557,21 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
 
         # --- Moved Frame Rate for Current Frame ---
         elif scene_props.frame_mode == "CURRENT":
-             # Frame rate isn't really used for single frame, but keep UI consistent?
-             # Or hide it? Let's keep it but maybe disable or label it.
-             row = col.row()
-             row.prop(scene_props, "frame_rate")
-             row.enabled = False # Disable for single frame as video not created
-             # Could add label: layout.label(text="(Frame rate used for video modes)")
+            # Frame rate isn't really used for single frame, but keep UI consistent?
+            # Or hide it? Let's keep it but maybe disable or label it.
+            row = col.row()
+            row.prop(scene_props, "frame_rate")
+            row.enabled = False # Disable for single frame as video not created
+            # Could add label: layout.label(text="(Frame rate used for video modes)")
+
+            box_lora = col.box()
+            box_lora.label(text="LoRA Settings (Single Frame):")
+            box_lora.prop(scene_props, "selected_lora")
+            # Show strength only if a LoRA is selected
+            if scene_props.selected_lora != "NONE" and scene_props.selected_lora != "INVALID_PATH" and scene_props.selected_lora != "SCAN_ERROR":
+                row_lora_str = box_lora.row(align=True)
+                row_lora_str.prop(scene_props, "lora_strength_model", text="Model Str.")
+                row_lora_str.prop(scene_props, "lora_strength_clip", text="CLIP Str.")
 
         col.separator()
 
@@ -1508,6 +1593,33 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
         # --- Preferences Button ---
         layout.operator(PREFERENCES_OT_open_comfyui_addon_prefs.bl_idname, text="Settings", icon="PREFERENCES")
 
+
+def get_lora_items(self, context):
+    """ Dynamically generates enum items for available LoRA files. """
+    items = [("NONE", "None", "Do not use any LoRA")]
+    prefs = context.preferences.addons[__name__].preferences
+    lora_dir = prefs.lora_directory
+
+    if not lora_dir or not os.path.isdir(lora_dir):
+        items.append(("INVALID_PATH", "LoRA Path Invalid!", "Set LoRA directory in addon preferences"))
+        return items
+
+    try:
+        valid_extensions = (".pt", ".safetensors")
+        count = 0
+        for filename in sorted(os.listdir(lora_dir)):
+            if filename.lower().endswith(valid_extensions) and os.path.isfile(os.path.join(lora_dir, filename)):
+                # Identifier, Name, Description
+                items.append((filename, filename, f"Use LoRA: {filename}"))
+                count += 1
+        # print(f"Found {count} LoRA files in {lora_dir}")
+
+    except Exception as e:
+        print(f"Error scanning LoRA directory '{lora_dir}': {e}")
+        items.append(("SCAN_ERROR", "Error Scanning Dir", f"Check console/permissions for {lora_dir}"))
+
+    return items
+
 # -------------------------------------------------------------------
 # Scene Properties
 # -------------------------------------------------------------------
@@ -1525,6 +1637,12 @@ class ComfyUISceneProperties(bpy.types.PropertyGroup):
         default="CURRENT",
         name="Frame Mode",
         description="Choose workflow type based on frame selection",
+    )
+    selected_lora: bpy.props.EnumProperty(
+        items=get_lora_items,
+        name="LoRA Model",
+        description="Select LoRA to use (Only for Current Frame mode)",
+        default=0,
     )
     frame_start: bpy.props.IntProperty(
         name="Start Frame", description="Starting frame number for range processing",
@@ -1559,6 +1677,16 @@ class ComfyUISceneProperties(bpy.types.PropertyGroup):
     invert_depth_input: bpy.props.BoolProperty(
         name="Invert Input", description="Invert the input image/video before processing (affects depth/control input)",
         default=False, # Defaulting to False might be safer for depth
+    )
+    lora_strength_model: bpy.props.FloatProperty(
+        name="LoRA Strength (Model)",
+        description="Strength applied to the model by the selected LoRA",
+        default=1.0, min=0.0, max=2.0,
+    )
+    lora_strength_clip: bpy.props.FloatProperty(
+        name="LoRA Strength (CLIP)",
+        description="Strength applied to CLIP by the selected LoRA",
+        default=1.0, min=0.0, max=2.0,
     )
 
 # -------------------------------------------------------------------
