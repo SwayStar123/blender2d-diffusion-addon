@@ -1,0 +1,282 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "waiNSFWIllustrious_v130.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "1girl, blonde hair, dress, flame print, gap (touhou), holding a red umbrella in the right hand, holding folding fan in the left hand, long hair, long sleeves, mob cap, solo, tabard, trigram, very long hair, white dress, wide sleeves, absurdres, highres, masterpiece, best quality, amazing quality, official anime artwork, screencap, anime screencap,  yakumo yukari, 1girl, solo, blonde hair, yellow eyes, long hair, sidelocks, dress, hat, hat ribbon, juliet sleeves, layered dress, long sleeves, mob cap, puffy sleeves, purple tabard, tabarad, white dress, white hat, wide sleeves, ying yang, yin yang print, gap touhou in umbrella, plain black background",
+      "clip": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "text": "3D character, realistic, photo realistic, 3D game, 3D, cropped, watermark, username, signature, bad artist, bad background, ugly, jpeg artifacts, squares, faded, blurred, lowres, low quality, monochrome, greyscale, artist name, (missing fingers), too many fingers, (worst quality, bad quality:1.2), bad anatomy, sketch, old, oldest, poorly drawn face, bad hands, morbid, deformed, disfigured, mutilated, malformed, missing body part, error, malformed hands, bad feet, fused legs, broken legs, plain pose, plain figure,",
+      "clip": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "6": {
+    "inputs": {
+      "seed": 336475458667755,
+      "steps": 20,
+      "cfg": 4,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "10",
+        0
+      ],
+      "positive": [
+        "14",
+        0
+      ],
+      "negative": [
+        "14",
+        1
+      ],
+      "latent_image": [
+        "17",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "7": {
+    "inputs": {
+      "samples": [
+        "6",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "8": {
+    "inputs": {
+      "images": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "9": {
+    "inputs": {
+      "stop_at_clip_layer": -2,
+      "clip": [
+        "10",
+        1
+      ]
+    },
+    "class_type": "CLIPSetLastLayer",
+    "_meta": {
+      "title": "CLIP Set Last Layer"
+    }
+  },
+  "10": {
+    "inputs": {
+      "lora_name": "Yakumo-Yukari_Illustrious.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "14": {
+    "inputs": {
+      "strength": 0.9000000000000001,
+      "start_percent": 0,
+      "end_percent": 1,
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "control_net": [
+        "15",
+        0
+      ],
+      "image": [
+        "16",
+        0
+      ]
+    },
+    "class_type": "ACN_AdvancedControlNetApply_v2",
+    "_meta": {
+      "title": "Apply Advanced ControlNet 🛂🅐🅒🅝"
+    }
+  },
+  "15": {
+    "inputs": {
+      "cnet": "controlnetpp_sdxl_promax.safetensors"
+    },
+    "class_type": "ACN_ControlNetLoaderAdvanced",
+    "_meta": {
+      "title": "Load Advanced ControlNet Model 🛂🅐🅒🅝"
+    }
+  },
+  "16": {
+    "inputs": {
+      "width": 1440,
+      "height": 1080,
+      "interpolation": "nearest",
+      "method": "stretch",
+      "condition": "always",
+      "multiple_of": 0,
+      "image": [
+        "20",
+        0
+      ]
+    },
+    "class_type": "ImageResize+",
+    "_meta": {
+      "title": "🔧 Image Resize"
+    }
+  },
+  "17": {
+    "inputs": {
+      "pixels": [
+        "23",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "18": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Invert input"
+    }
+  },
+  "19": {
+    "inputs": {
+      "image": [
+        "21",
+        0
+      ]
+    },
+    "class_type": "ImageInvert",
+    "_meta": {
+      "title": "Invert Image"
+    }
+  },
+  "20": {
+    "inputs": {
+      "condition": "A is TRUE",
+      "require_inputs": true,
+      "NOT": false,
+      "custom_expression": "",
+      "A": [
+        "18",
+        0
+      ],
+      "TRUE_IN": [
+        "19",
+        0
+      ],
+      "FALSE_IN": [
+        "21",
+        0
+      ]
+    },
+    "class_type": "IfConditionSelector",
+    "_meta": {
+      "title": "🔀 IF (Condition Selector)"
+    }
+  },
+  "21": {
+    "inputs": {
+      "image": " \"D:\\MyStuff\\Programming\\Rust\\colored_bad_apple\\frames\\original\\input_04365.png\"",
+      "custom_width": 0,
+      "custom_height": 0
+    },
+    "class_type": "VHS_LoadImagePath",
+    "_meta": {
+      "title": "Load Image (Path) (Depth Map)🎥🅥🅗🅢"
+    }
+  },
+  "22": {
+    "inputs": {
+      "image": " \"D:\\MyStuff\\Programming\\Rust\\colored_bad_apple\\frames\\original\\input_04365.png\"",
+      "custom_width": 0,
+      "custom_height": 0
+    },
+    "class_type": "VHS_LoadImagePath",
+    "_meta": {
+      "title": "Load Image (Path) (Base image Img2Img)🎥🅥🅗🅢"
+    }
+  },
+  "23": {
+    "inputs": {
+      "width": 1440,
+      "height": 1080,
+      "interpolation": "nearest",
+      "method": "stretch",
+      "condition": "always",
+      "multiple_of": 0,
+      "image": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "ImageResize+",
+    "_meta": {
+      "title": "🔧 Image Resize"
+    }
+  }
+}

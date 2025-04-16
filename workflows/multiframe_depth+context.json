@@ -13,8 +13,8 @@
   },
   "16": {
     "inputs": {
-      "positive_prompt": "black and white cartoon character",
-      "negative_prompt": "colorful, bad quality, blurry, messy, chaotic",
+      "positive_prompt": "anime character holding a folding fan",
+      "negative_prompt": "bad quality, blurry, messy, chaotic, motion blur, focus breathing",
       "force_offload": true,
       "t5": [
         "11",
@@ -92,8 +92,8 @@
   },
   "52": {
     "inputs": {
-      "rel_l1_thresh": 0.10000000000000002,
-      "start_step": 0,
+      "rel_l1_thresh": 0.06000000000000001,
+      "start_step": 1,
       "end_step": -1,
       "cache_device": "offload_device",
       "use_coefficients": "true",
@@ -144,7 +144,7 @@
       "steps": 15,
       "cfg": 4.000000000000001,
       "shift": 5,
-      "seed": 17,
+      "seed": 77668678288354,
       "force_offload": true,
       "scheduler": "unipc",
       "riflex_freq_index": 0,
@@ -196,7 +196,7 @@
   "72": {
     "inputs": {
       "blocks": "8",
-      "start_percent": 0.30000000000000004,
+      "start_percent": 0.20000000000000004,
       "end_percent": 0.7000000000000002
     },
     "class_type": "WanVideoSLG",
@@ -236,7 +236,7 @@
   },
   "111": {
     "inputs": {
-      "num_frames": 41,
+      "num_frames": 25,
       "empty_frame_level": 0,
       "start_image": [
         "74",
@@ -347,7 +347,7 @@
       "force_rate": 0,
       "custom_width": 0,
       "custom_height": 0,
-      "frame_load_cap": 41,
+      "frame_load_cap": 24,
       "skip_first_frames": 0,
       "select_every_nth": 1,
       "format": "AnimateDiff"
@@ -422,7 +422,7 @@
   },
   "191": {
     "inputs": {
-      "value": false
+      "value": true
     },
     "class_type": "PrimitiveBoolean",
     "_meta": {
@@ -468,7 +468,7 @@
   },
   "194": {
     "inputs": {
-      "num_frames": 41,
+      "num_frames": 25,
       "empty_frame_level": 0,
       "start_image": [
         "74",
@@ -486,7 +486,7 @@
   },
   "195": {
     "inputs": {
-      "num_frames": 41,
+      "num_frames": 25,
       "empty_frame_level": 0,
       "end_image": [
         "115",
@@ -580,7 +580,7 @@
   },
   "203": {
     "inputs": {
-      "image": "D://MyStuff/Programming/Rust/colored_bad_apple/frames/original/input_00150.png",
+      "image": "\"C:\\Users\\ASUS\\Downloads\\ComfyUI_temp_qqscz_00245_.png\"",
       "custom_width": 0,
       "custom_height": 0
     },
@@ -591,7 +591,7 @@
   },
   "204": {
     "inputs": {
-      "image": "D://MyStuff/Programming/Rust/colored_bad_apple/frames/original/input_00192.png",
+      "image": "\"C:\\Users\\ASUS\\Downloads\\ComfyUI_temp_qqscz_00269_.png\"",
       "custom_width": 0,
       "custom_height": 0
     },

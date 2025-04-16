@@ -10,15 +10,13 @@ import time
 import subprocess  # To run ffmpeg
 import threading   # For modal operator background task
 import queue       # For thread communication
+import random      # For random seed generation
 import shutil      # For robust directory removal
 
 # ------------------------------------------------------------------
 #    Adjust this path if necessary for websocket-client or other packages:
-#    Consider using Blender's built-in python/lib/site-packages or installing
-#    via pip into Blender's Python environment if possible.
 packages_path = "C:\\Users\\ASUS\\AppData\\Roaming\\Python\\Python311\\site-packages" # EXAMPLE PATH
 if packages_path not in sys.path:
-    # Check if the path exists before adding
     if os.path.isdir(packages_path):
         sys.path.insert(0, packages_path)
         print(f"Added package path: {packages_path}")
@@ -33,13 +31,11 @@ except ImportError:
         "ERROR: Could not import 'websocket'. Ensure 'websocket-client' is installed "
         f"in a path known to Blender's Python (e.g., '{packages_path}' if valid, or Blender's site-packages)."
     )
-    websocket = None # Set to None to handle checks later
+    websocket = None
 
 # --- Try importing SPA Studios Grease Pencil Core ---
 try:
-    # Assuming the SPA addon is installed and follows this structure
     from spa_anim2D.gpencil_references import core as spa_gp_core
-    # Check if the necessary function exists as a sanity check
     if not hasattr(spa_gp_core, 'import_image_as_gp_reference'):
          raise AttributeError("SPA GP Core module loaded, but 'import_image_as_gp_reference' not found.")
     SPA_GP_AVAILABLE = True
@@ -55,18 +51,18 @@ except (ImportError, AttributeError) as e:
 # ------------------------------------------------------------------
 
 bl_info = {
-    "name": "ComfyUI GPencil Integration v3", # Renamed and versioned
-    "author": "Your Name (Modified for Dynamic Workflows + GPencil)",
+    "name": "ComfyUI GPencil Integration v3.1",
+    "author": "Sway",
     "version": (3, 1, 0),
     "blender": (3, 3, 0),
     "location": "View3D > Sidebar > ComfyUI",
     "description": (
-        "Captures frames, sends to ComfyUI using dynamically selected workflows, "
+        "Captures frames/GP layers, sends to ComfyUI using dynamically selected workflows (incl. SDXL img2img), "
         "and adds results as Grease Pencil references fitted to camera view. "
         "Requires ACTIVE GP OBJECT, SPA addon, ffmpeg, websocket-client."
     ),
     "category": "Object",
-    "warning": "Requires ACTIVE GP OBJECT, SPA Addon, ffmpeg in PATH, and 'websocket-client'.", # Updated warning
+    "warning": "Requires ACTIVE GP OBJECT, SPA Addon, ffmpeg in PATH, 'websocket-client'. SDXL needs GP layer for depth.",
     "doc_url": "",
     "tracker_url": "",
 }
@@ -76,46 +72,52 @@ bl_info = {
 # -------------------------------------------------------------------
 WORKFLOW_DIR = os.path.join(os.path.dirname(__file__), "workflows")
 WORKFLOW_FILES = {
-    "SINGLE": "singleframe.json",
+    "SINGLE_SDXL": "singleframe_sdxl.json",
     "MULTI_REF": "multiframe_depth+reference.json",
     "MULTI_CONTEXT": "multiframe_depth+context.json",
 }
 
-# Define KEY node IDs for each workflow type. Use logical names.
-# IDs based on the provided JSON files. VERIFY THESE CAREFULLY.
+# Define KEY node IDs for each workflow type. VERIFY THESE CAREFULLY.
 WORKFLOW_NODE_IDS = {
-    "SINGLE": {
-        "PROMPT": "4",              # CLIPTextEncode (Positive)
-        "NEGATIVE_PROMPT": "13",    # CLIPTextEncode (Negative) - Optional if needed elsewhere
-        "LORA_LOADER": "3",         # LoraLoader (for setting lora)
-        "INPUT_IMAGE": "40",        # VHS_LoadImagePath (for the single frame)
-        "CNET_STRENGTH": "6",       # ControlNetApplyAdvanced (contains strength input)
-        "INVERT_BOOL": "37",        # PrimitiveBoolean (for input image inversion)
-        "OUTPUT_DECODE": "19",      # PreviewImage (after upscale) - Target this for results
-        "SAVE_IMAGE": "35",         # SaveImage (final output node, use DECODE for WS)
+    "SINGLE_SDXL": {
+        "PROMPT": "4",                  # CLIPTextEncode (Positive)
+        "NEGATIVE_PROMPT": "5",         # CLIPTextEncode (Negative)
+        "LORA_LOADER": "10",            # LoraLoader
+        "INPUT_IMAGE_BASE": "22",       # VHS_LoadImagePath (Base Image for img2img - from viewport)
+        "INPUT_IMAGE_DEPTH": "21",      # VHS_LoadImagePath (Depth Map - from GP layer)
+        "CNET_STRENGTH": "14",          # ACN_AdvancedControlNetApply_v2 (strength input)
+        "INVERT_BOOL": "18",            # PrimitiveBoolean (for depth map inversion)
+        "KSAMPLER_DENOISE": "6",        # KSampler (denoise input)
+        "OUTPUT_DECODE": "8",           # PreviewImage (after VAE Decode)
+        "SAMPLER_SEED": "6",            # KSampler (seed input)
+        # Unused for now
+        "CHECKPOINT_LOADER": "1",
+        "CONTROLNET_LOADER": "15",      # ACN_ControlNetLoaderAdvanced
+        "VAE_ENCODE_BASE": "17",        # VAEEncode (for base image img2img)
+        "RESIZE_DEPTH": "16",           # ImageResize+ (for depth map)
+        "RESIZE_BASE": "23",            # ImageResize+ (for base image)
     },
     "MULTI_REF": {
-        "PROMPT": "168",            # WanVideoTextEncode (Contains positive/negative)
-        "INPUT_VIDEO": "189",       # VHS_LoadVideoPath (main frame sequence)
-        "REFERENCE_IMAGE": "188",   # VHS_LoadImagePath (single reference image)
-        "INVERT_BOOL": "185",       # PrimitiveBoolean (for input VIDEO inversion)
-        "OUTPUT_DECODE": "190",     # SaveImage (produces final images)
-        # "VIDEO_COMBINE": "165",     # VHS_VideoCombine (use DECODE for WS)
+        "PROMPT": "168",
+        "INPUT_VIDEO": "189",
+        "REFERENCE_IMAGE": "188",
+        "INVERT_BOOL": "185",
+        "OUTPUT_DECODE": "190",
+        "SAMPLER_SEED": "172",          # WanVideoSampler (seed input)
     },
     "MULTI_CONTEXT": {
-        "PROMPT": "16",             # WanVideoTextEncode
-        "INPUT_VIDEO": "184",       # VHS_LoadVideo (main frame sequence)
-        "PRECEDING_IMAGE": "203",   # VHS_LoadImagePath (for frame N-1)
-        "SUCCEEDING_IMAGE": "204",  # VHS_LoadImagePath (for frame N+1)
-        "USE_PRECEDING_BOOL": "191",# PrimitiveBoolean (controls use of start frame)
-        "USE_SUCCEEDING_BOOL": "192",# PrimitiveBoolean (controls use of end frame)
-        "INVERT_BOOL": "186",       # PrimitiveBoolean (for input VIDEO inversion)
-        "OUTPUT_DECODE": "205",     # SaveImage (produces final images)
-        # "VIDEO_COMBINE": "139",     # VHS_VideoCombine (use DECODE for WS)
-        "VACE_STARTEND_1": "111",   # Need to set num_frames here
-        "VACE_STARTEND_2": "194",   # Need to set num_frames here
-        "VACE_STARTEND_3": "195",   # Need to set num_frames here
-
+        "PROMPT": "16",
+        "INPUT_VIDEO": "184",
+        "PRECEDING_IMAGE": "203",
+        "SUCCEEDING_IMAGE": "204",
+        "USE_PRECEDING_BOOL": "191",
+        "USE_SUCCEEDING_BOOL": "192",
+        "INVERT_BOOL": "186",
+        "OUTPUT_DECODE": "205",
+        "VACE_STARTEND_1": "111",
+        "VACE_STARTEND_2": "194",
+        "VACE_STARTEND_3": "195",
+        "SAMPLER_SEED": "70",           # WanVideoSampler (seed input)
     }
 }
 
@@ -142,7 +144,7 @@ class ComfyUIAddonPreferences(bpy.types.AddonPreferences):
         name="Workflow Directory Info",
         description="Location where the addon expects workflow JSON files",
         default=f"Expected in: {WORKFLOW_DIR}",
-        options={'HIDDEN'} # Hide from direct editing, just informational
+        options={'HIDDEN'}
     )
 
     def draw(self, context):
@@ -159,7 +161,7 @@ class ComfyUIAddonPreferences(bpy.types.AddonPreferences):
         box.label(text="Dependencies & Notes:", icon="INFO")
         box.label(text="- Requires an ACTIVE Grease Pencil object selected.")
         box.label(text="- Requires SPA Studios Blender fork/addon features.")
-        box.label(text="- Requires 'ffmpeg' installed and in system PATH.")
+        box.label(text="- Requires 'ffmpeg' installed and in system PATH (for multi-frame).")
         box.label(text="- Requires 'websocket-client' Python package.")
         box.label(text=f"  (Attempting websocket load from relevant paths including: {packages_path})")
         box.label(text=f"- Requires workflow JSON files in: {WORKFLOW_DIR}")
@@ -174,20 +176,23 @@ class ComfyUIAddonPreferences(bpy.types.AddonPreferences):
                  box.label(text=f"  WARNING: Missing workflow files: {', '.join(missing_files)}", icon='ERROR')
              else:
                  box.label(text=f"  All required workflow files found.", icon='CHECKMARK')
+        box.label(text="- Single Frame (SDXL) requires selecting a GP layer for depth map.")
 
 
 # -------------------------------------------------------------------
-# HELPER: Capture the current view
+# HELPER: Capture the current view (Now for Base Image)
 # -------------------------------------------------------------------
 def capture_viewport(output_path, context):
     """
     Renders the current view to the specified PNG file path.
+    Used for the BASE IMAGE in SDXL img2img or single input in other modes.
     Uses camera render if available and active, otherwise OpenGL viewport render.
     """
     scene = context.scene
     render = scene.render
     original_filepath = render.filepath
     original_format = render.image_settings.file_format
+    original_engine = render.engine
 
     area = next((a for a in context.screen.areas if a.type == "VIEW_3D"), None)
     space = (
@@ -210,20 +215,22 @@ def capture_viewport(output_path, context):
             )
 
             if is_camera_view:
-                print("Capturing using Render Engine settings.")
-                # *** NOTE: This will use scene render resolution, NOT the 480x360 assumed by workflow ***
-                # Consider warning the user or adding an option to force OpenGL with fixed size?
-                # For now, proceed as requested.
+                print("Capturing BASE IMAGE using Render Engine settings.")
+                # Ensure render engine is compatible with grease pencil visibility if needed later?
+                # For base image, Workbench or Eevee is usually fine.
+                # Consider setting to Workbench temporarily?
+                # original_engine = render.engine # Moved up
+                # render.engine = 'BLENDER_WORKBENCH'
                 bpy.ops.render.render(write_still=True)
                 use_opengl = False
             else:
-                print("Camera exists, but not in camera view. Using OpenGL viewport capture.")
+                print("Camera exists, but not in camera view. Using OpenGL viewport capture for BASE IMAGE.")
         else:
-            print("No scene camera found, using OpenGL viewport capture.")
+            print("No scene camera found, using OpenGL viewport capture for BASE IMAGE.")
 
         if use_opengl:
             if space:
-                print("Capturing using OpenGL render.")
+                print("Capturing BASE IMAGE using OpenGL render.")
                 render_region = None
                 for region in area.regions:
                     if region.type == 'WINDOW':
@@ -233,23 +240,121 @@ def capture_viewport(output_path, context):
                     raise RuntimeError("Cannot perform OpenGL capture without a valid WINDOW region.")
 
                 with context.temp_override(area=area, region=render_region):
-                    # *** NOTE: OpenGL also uses viewport resolution, may not be 480x360 ***
+                    # *** NOTE: OpenGL uses viewport resolution ***
                     bpy.ops.render.opengl(write_still=True, view_context=True)
             else:
                  raise RuntimeError("Cannot perform OpenGL capture without a valid 3D Viewport space.")
 
     except Exception as e:
-        print(f"Error during viewport capture: {e}")
+        print(f"Error during BASE IMAGE viewport capture: {e}")
         raise
     finally:
         render.filepath = original_filepath
         render.image_settings.file_format = original_format
+        render.engine = original_engine # <<< NEW: Restore engine
 
     if not os.path.exists(output_path):
-        raise RuntimeError(f"Output image file not found after capture attempt: {output_path}")
+        raise RuntimeError(f"Output BASE image file not found after capture attempt: {output_path}")
     elif os.path.getsize(output_path) == 0:
-        raise RuntimeError(f"Output image file is empty after capture attempt: {output_path}")
+        raise RuntimeError(f"Output BASE image file is empty after capture attempt: {output_path}")
 
+    return output_path
+
+
+# -------------------------------------------------------------------
+# HELPER: Capture a specific Grease Pencil layer for Depth Map
+# -------------------------------------------------------------------
+def capture_gp_layer(output_path, context, gp_object, layer_name):
+    """
+    Renders the specified GP layer of the GP object to a PNG file.
+    Used for the DEPTH MAP input in SDXL workflow.
+    Uses OpenGL rendering with isolated layer visibility.
+    """
+    if not gp_object or gp_object.type != 'GPENCIL' or not gp_object.data:
+        raise ValueError("Invalid Grease Pencil object provided.")
+    gpd = gp_object.data
+    if not layer_name or layer_name not in gpd.layers:
+        raise ValueError(f"Grease Pencil layer '{layer_name}' not found in object '{gp_object.name}'.")
+
+    scene = context.scene
+    render = scene.render
+    original_filepath = render.filepath
+    original_format = render.image_settings.file_format
+    # Store original visibility states
+    original_layer_hide_states = {layer.info: layer.hide for layer in gpd.layers}
+    original_object_hide_render_states = {obj.name: obj.hide_render for obj in scene.objects if obj != gp_object}
+    original_gp_hide_render = gp_object.hide_render
+    original_shading_color_type = context.space_data.shading.color_type if context.space_data else 'MATERIAL' # Store viewport shading
+
+    area = next((a for a in context.screen.areas if a.type == "VIEW_3D"), None)
+    space = (
+        next((s for s in area.spaces if s.type == "VIEW_3D"), None) if area else None
+    )
+    if not space: raise RuntimeError("Could not find active 3D Viewport space for GP Layer capture.")
+    render_region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+    if not render_region: raise RuntimeError("Cannot perform OpenGL capture without a valid WINDOW region.")
+
+    print(f"Preparing to capture GP layer '{layer_name}' as depth map...")
+
+    try:
+        render.filepath = output_path
+        render.image_settings.file_format = "PNG"
+
+        # --- Isolate GP Object and Layer ---
+        print("  Isolating GP object and layer...")
+        # Hide other objects in render
+        for obj_name, _ in original_object_hide_render_states.items():
+             obj = scene.objects.get(obj_name)
+             if obj: obj.hide_render = True
+        # Make sure target GP object is renderable
+        gp_object.hide_render = False
+        # Hide all GP layers except the target one
+        for layer in gpd.layers:
+            layer.hide = (layer.info != layer_name)
+
+        # --- Configure Viewport for clean capture ---
+        # Set viewport shading to a solid color (white strokes on black/transparent bg)
+        # 'MATERIAL' often works well if GP material is white. 'SINGLE' with white color might be safer.
+        # context.space_data.shading.light = 'FLAT' # Already default for OpenGL render?
+        original_color_type = space.shading.color_type
+        original_single_color = space.shading.single_color[:]
+        space.shading.color_type = 'SINGLE'
+        space.shading.single_color = (1.0, 1.0, 1.0) # White strokes
+
+        # --- Capture using OpenGL ---
+        print(f"  Capturing OpenGL render to: {output_path}")
+        with context.temp_override(area=area, region=render_region, space_data=space):
+            bpy.ops.render.opengl(write_still=True, view_context=True)
+
+    except Exception as e:
+        print(f"Error during GP Layer capture for '{layer_name}': {e}")
+        raise
+    finally:
+        # --- Restore original states ---
+        print("  Restoring original object/layer visibility and shading...")
+        render.filepath = original_filepath
+        render.image_settings.file_format = original_format
+
+        if space: # Check if space is still valid
+            space.shading.color_type = original_color_type
+            space.shading.single_color = original_single_color
+
+        gp_object.hide_render = original_gp_hide_render
+        for obj_name, hidden_state in original_object_hide_render_states.items():
+             obj = scene.objects.get(obj_name)
+             if obj: obj.hide_render = hidden_state
+        for layer_info, hidden_state in original_layer_hide_states.items():
+            layer = gpd.layers.get(layer_info)
+            if layer: layer.hide = hidden_state
+        print("  Restoration complete.")
+
+
+    if not os.path.exists(output_path):
+        raise RuntimeError(f"Output GP layer image file not found after capture attempt: {output_path}")
+    elif os.path.getsize(output_path) == 0:
+        raise RuntimeError(f"Output GP layer image file is empty after capture attempt: {output_path}")
+
+    print(f"GP Layer '{layer_name}' captured successfully.")
     return output_path
 
 
@@ -263,7 +368,6 @@ def create_video_from_frames(
     frame_pattern="frame_%04d.png",
     start_number=None,
 ):
-    """Uses ffmpeg to create a video from PNG frames."""
     input_pattern = os.path.join(frame_dir, frame_pattern)
     os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
 
@@ -602,9 +706,9 @@ def get_comfyui_images_ws(
 # -------------------------------------------------------------------
 class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
     bl_idname = "object.run_comfyui_modal"
-    bl_label = "Run ComfyUI GPencil Workflow" # Simplified Label
+    bl_label = "Run ComfyUI GPencil Workflow"
     bl_description = (
-        "Capture frames, run selected ComfyUI workflow, create GP references. "
+        "Capture frame/GP layer, run selected ComfyUI workflow, create GP references. "
         "Requires ACTIVE GP OBJECT and SPA addon features. Runs in background."
     )
     bl_options = {"REGISTER", "UNDO"}
@@ -620,28 +724,34 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
     temp_dir_obj = None
     temp_dir_path = None
     frames_to_process = []
-    frame_paths = {} # Store paths by frame number: {1: "path/f_0001.png", ...}
+    frame_paths = {} # For multiframe base images {1: "path/f_0001.png", ...}
+    base_image_path: bpy.props.StringProperty(options={"SKIP_SAVE"}) # For single frame base
+    depth_map_path: bpy.props.StringProperty(options={"SKIP_SAVE"}) # For single frame depth
     frame_pattern = "frame_%04d.png"
+    depth_pattern = "depthmap_%04d.png"
     temp_video_path = None
     workflow = None # Loaded workflow dictionary
-    workflow_type = None # 'SINGLE', 'MULTI_REF', 'MULTI_CONTEXT'
+    workflow_type = None # 'SINGLE_SDXL', 'MULTI_REF', 'MULTI_CONTEXT'
     node_ids = {} # Node ID mapping for the loaded workflow
     client_id = None
     original_frame = 0
     previous_obj = None
     previous_mode = None
     final_result = None
-    output_img_paths = [] # Store paths of images SAVED by the addon locally
+    output_img_paths = []
     selected_lora_name: bpy.props.StringProperty(options={"SKIP_SAVE"})
-    selected_lora_strength_model: bpy.props.FloatProperty(options={"SKIP_SAVE"}) 
+    selected_lora_strength_model: bpy.props.FloatProperty(options={"SKIP_SAVE"})
     selected_lora_strength_clip: bpy.props.FloatProperty(options={"SKIP_SAVE"})
     server_address = ""
     target_gp_object_name: bpy.props.StringProperty(options={"SKIP_SAVE"})
 
     # Store settings needed by thread
     scene_user_prompt: bpy.props.StringProperty(options={"SKIP_SAVE"})
+    scene_negative_prompt: bpy.props.StringProperty(options={"SKIP_SAVE"})
+    scene_denoise_strength: bpy.props.FloatProperty(options={"SKIP_SAVE"})
+    scene_depth_map_layer: bpy.props.StringProperty(options={"SKIP_SAVE"})
     scene_frame_rate: bpy.props.IntProperty(options={"SKIP_SAVE"})
-    scene_depth_strength: bpy.props.FloatProperty(options={"SKIP_SAVE"}) # Still needed? Check workflows
+    scene_depth_strength: bpy.props.FloatProperty(options={"SKIP_SAVE"}) # ControlNet strength
     scene_invert_depth: bpy.props.BoolProperty(options={"SKIP_SAVE"})
     scene_reference_image_path: bpy.props.StringProperty(options={"SKIP_SAVE"})
     scene_use_preceding: bpy.props.BoolProperty(options={"SKIP_SAVE"})
@@ -650,16 +760,14 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
     succeeding_frame_path: bpy.props.StringProperty(options={"SKIP_SAVE"})
 
     def _get_first_lora_fallback(self, context):
-        """Gets the filename of the first available LoRA as a fallback."""
-        items = get_lora_items(self, context) # Call the dynamic enum function
+        items = get_lora_items(self, context)
         for identifier, name, description in items:
-            if identifier not in ["NONE", "INVALID_PATH", "SCAN_ERROR"]:
-                return identifier # Return the first valid filename
-        return None # No valid LoRAs found
+            if identifier not in ["NONE", "INVALID_PATH", "SCAN_ERROR"]: return identifier
+        return None
 
     @classmethod
     def poll(cls, context):
-        # Base checks
+        # Basic checks
         if not isinstance(context.region.data, bpy.types.RegionView3D): cls.poll_message_set("Requires a 3D Viewport"); return False
         if not websocket: cls.poll_message_set("Missing 'websocket-client' package"); return False
         if not SPA_GP_AVAILABLE: cls.poll_message_set("Requires SPA Studios Grease Pencil addon"); return False
@@ -673,139 +781,184 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         wm = context.window_manager
         if getattr(wm, "comfyui_modal_operator_running", False): return False
 
-        # Check workflow files exist (basic check)
+        # Check workflow files exist
         if not os.path.isdir(WORKFLOW_DIR): cls.poll_message_set(f"Workflow dir missing: {WORKFLOW_DIR}"); return False
-        # Could add check for specific needed file based on current UI state, but might be overkill for poll
-
         scene_props = context.scene.comfyui_props
+
+        gp_layer_valid = False
+        if scene_props.depth_map_layer and scene_props.depth_map_layer not in ["NONE", "NO_GP_OBJECT", "NO_LAYERS"]:
+            gp_data = active_obj.data
+            if gp_data and scene_props.depth_map_layer in gp_data.layers:
+                gp_layer_valid = True
+            else:
+                 cls.poll_message_set(f"Selected GP layer '{scene_props.depth_map_layer}' not found"); return False
+        else:
+            if not scene_props.depth_map_layer or scene_props.depth_map_layer == "NONE": msg = "Select a GP Layer for Depth Map"
+            elif scene_props.depth_map_layer == "NO_GP_OBJECT": msg = "Select active GP object first" # Should be caught above
+            else: msg = "Active GP object has no layers"
+            cls.poll_message_set(msg); return False
+
         if scene_props.frame_mode == "CURRENT":
-            prefs = context.preferences.addons[__name__].preferences
-            lora_dir = prefs.lora_directory
-            if not lora_dir or not os.path.isdir(lora_dir):
-                cls.poll_message_set("LoRA directory invalid/not set in preferences")
-                return False
-            # Check if selected lora is an error indicator
-            if scene_props.selected_lora in ["INVALID_PATH", "SCAN_ERROR"]:
-                 cls.poll_message_set(f"LoRA Selection Error: {scene_props.selected_lora}")
-                 return False
+             workflow_file = WORKFLOW_FILES.get("SINGLE_SDXL")
+             if not workflow_file or not os.path.exists(os.path.join(WORKFLOW_DIR, workflow_file)): cls.poll_message_set(f"Missing workflow: {workflow_file}"); return False
+             # Check LoRA dir/selection
+             prefs = context.preferences.addons[__name__].preferences
+             lora_dir = prefs.lora_directory
+             if not lora_dir or not os.path.isdir(lora_dir): cls.poll_message_set("LoRA directory invalid/not set"); return False
+             if scene_props.selected_lora in ["INVALID_PATH", "SCAN_ERROR"]: cls.poll_message_set(f"LoRA Selection Error: {scene_props.selected_lora}"); return False
+             # Check if GP Depth Layer is selected and valid
+             if not scene_props.depth_map_layer or scene_props.depth_map_layer == "NONE": cls.poll_message_set("Select a GP Layer for Depth Map"); return False
+             if scene_props.depth_map_layer == "NO_GP_OBJECT": cls.poll_message_set("Select active GP object first"); return False
+             if scene_props.depth_map_layer == "NO_LAYERS": cls.poll_message_set("Active GP object has no layers"); return False
+             # Ensure the selected layer actually exists (in case it was deleted)
+             gp_data = active_obj.data
+             if gp_data and scene_props.depth_map_layer not in gp_data.layers: cls.poll_message_set(f"Selected GP layer '{scene_props.depth_map_layer}' not found"); return False
+        else: # RANGE
+             # Check multi-frame workflows exist
+             wf_ref = WORKFLOW_FILES.get("MULTI_REF")
+             wf_ctx = WORKFLOW_FILES.get("MULTI_CONTEXT")
+             missing_multi = []
+             if not wf_ref or not os.path.exists(os.path.join(WORKFLOW_DIR, wf_ref)): missing_multi.append(wf_ref)
+             if not wf_ctx or not os.path.exists(os.path.join(WORKFLOW_DIR, wf_ctx)): missing_multi.append(wf_ctx)
+             if missing_multi: cls.poll_message_set(f"Missing workflows: {', '.join(missing_multi)}"); return False
+             # Check reference image if needed
+             if not scene_props.use_preceding_frame and not scene_props.use_succeeding_frame:
+                 ref_path = bpy.path.abspath(scene_props.reference_image_path) if scene_props.reference_image_path else ""
+                 if not ref_path or not os.path.exists(ref_path): cls.poll_message_set("Reference image path required/invalid"); return False
 
         return True
 
 
     def _comfyui_worker_thread(self):
-        """
-        Worker thread: Creates video (if needed), modifies workflow, queues, waits for results.
-        """
+        """ Worker thread: Creates video (if needed), modifies workflow, queues, waits for results. """
         try:
             # --- 1) Prepare Inputs (Video/Image Paths) ---
-            if self.workflow_type == "SINGLE":
-                # Single frame: Input is the captured image path
-                if not self.frames_to_process: raise ValueError("No frame captured for single frame mode.")
-                frame_num = self.frames_to_process[0]
-                input_image_path = self.frame_paths.get(frame_num)
-                if not input_image_path or not os.path.exists(input_image_path):
-                     raise ValueError(f"Input image path not found for frame {frame_num}.")
-                abs_input_path = os.path.abspath(input_image_path).replace("\\", "/")
-                print(f"Using single frame input: {abs_input_path}")
-                self.workflow[self.node_ids["INPUT_IMAGE"]]["inputs"]["image"] = abs_input_path
-            else:
-                # Multi frame: Input is a video
-                self._thread_status = "Creating temporary video..."
+            # Handle SINGLE_SDXL inputs
+            if self.workflow_type == "SINGLE_SDXL":
+                if not self.base_image_path or not os.path.exists(self.base_image_path):
+                    raise ValueError("Base image path not found for single frame SDXL.")
+                if not self.depth_map_path or not os.path.exists(self.depth_map_path):
+                    raise ValueError("Depth map image path not found for single frame SDXL.")
+
+                abs_base_path = os.path.abspath(self.base_image_path).replace("\\", "/")
+                abs_depth_path = os.path.abspath(self.depth_map_path).replace("\\", "/")
+                print(f"Using single frame SDXL inputs:")
+                print(f"  Base Image: {abs_base_path}")
+                print(f"  Depth Map:  {abs_depth_path}")
+                self.workflow[self.node_ids["INPUT_IMAGE_BASE"]]["inputs"]["image"] = abs_base_path
+                self.workflow[self.node_ids["INPUT_IMAGE_DEPTH"]]["inputs"]["image"] = abs_depth_path
+            else: # MULTI_REF or MULTI_CONTEXT
+                self._thread_status = "Creating temporary video (from Depth Layers)..." # <<< MODIFIED Status
                 self._thread_progress = ""
                 start_num = self.frames_to_process[0] if self.frames_to_process else 0
-                video_filename = f"input_video_{start_num}.mp4"
+                video_filename = f"input_video_{start_num}.mp4" # Keep filename generic
                 self.temp_video_path = os.path.join(self.temp_dir_path, video_filename)
 
+                # Use the depth_pattern for the video input files
                 create_video_from_frames(
                     self.temp_dir_path, self.temp_video_path,
-                    self.scene_frame_rate, self.frame_pattern, start_number=start_num
+                    self.scene_frame_rate,
+                    self.depth_pattern,
+                    start_number=start_num
                 )
                 abs_video_path = os.path.abspath(self.temp_video_path).replace("\\", "/")
-                print(f"Using video input: {abs_video_path}")
+                print(f"Using video input (from depth layers): {abs_video_path}")
                 # Set video path in workflow
                 self.workflow[self.node_ids["INPUT_VIDEO"]]["inputs"]["video"] = abs_video_path
-                # Set frame load cap/skip based on original frames? (Workflows have defaults)
-                # Example: Could set frame_load_cap = len(self.frames_to_process) if node supports it
+                # Set frame load cap (remains the same)
                 if "frame_load_cap" in self.workflow[self.node_ids["INPUT_VIDEO"]]["inputs"]:
                      self.workflow[self.node_ids["INPUT_VIDEO"]]["inputs"]["frame_load_cap"] = len(self.frames_to_process)
                      print(f"  Set frame_load_cap to {len(self.frames_to_process)}")
-                # else: node doesn't support it or isn't VHS Load Video Path type
 
             # --- 2) Set Common Parameters (Prompt, Invert, etc.) ---
-            # Prompt (adjust based on workflow structure)
+            # Positive Prompt
             if "PROMPT" in self.node_ids:
                 prompt_node_id = self.node_ids["PROMPT"]
-                if prompt_node_id in self.workflow:
-                    # Single frame workflow has separate positive prompt node
-                    if self.workflow_type == "SINGLE" and "text" in self.workflow[prompt_node_id]["inputs"]:
-                        self.workflow[prompt_node_id]["inputs"]["text"] = self.scene_user_prompt
-                        print(f"  Set Prompt (Node {prompt_node_id}): {self.scene_user_prompt[:30]}...")
-                    # Multi frame workflows use WanVideoTextEncode with positive/negative
-                    elif self.workflow_type in ["MULTI_REF", "MULTI_CONTEXT"] and "positive_prompt" in self.workflow[prompt_node_id]["inputs"]:
-                         self.workflow[prompt_node_id]["inputs"]["positive_prompt"] = self.scene_user_prompt
-                         # You might want a separate negative prompt UI element later
-                         # self.workflow[prompt_node_id]["inputs"]["negative_prompt"] = self.scene_negative_prompt
+                if prompt_node_id in self.workflow and "inputs" in self.workflow[prompt_node_id]:
+                     # Assumes 'text' input for SDXL CLIPTextEncode too
+                     if "text" in self.workflow[prompt_node_id]["inputs"]:
+                         self.workflow[prompt_node_id]["inputs"]["text"] = self.scene_user_prompt
                          print(f"  Set Positive Prompt (Node {prompt_node_id}): {self.scene_user_prompt[:30]}...")
-                else: print(f"  Warning: Prompt Node ID '{prompt_node_id}' not found in workflow.")
+                     # Handle WanVideoTextEncode for multi-frame if different key needed
+                     elif self.workflow_type in ["MULTI_REF", "MULTI_CONTEXT"] and "positive_prompt" in self.workflow[prompt_node_id]["inputs"]:
+                          self.workflow[prompt_node_id]["inputs"]["positive_prompt"] = self.scene_user_prompt
+                          print(f"  Set Positive Prompt (Node {prompt_node_id}): {self.scene_user_prompt[:30]}...")
+                else: print(f"  Warning: Positive Prompt Node ID '{prompt_node_id}' not found.")
 
-            # Invert Input Boolean
+            # Negative Prompt (Primarily for SDXL)
+            if "NEGATIVE_PROMPT" in self.node_ids:
+                neg_prompt_node_id = self.node_ids["NEGATIVE_PROMPT"]
+                if neg_prompt_node_id in self.workflow and "inputs" in self.workflow[neg_prompt_node_id] and "text" in self.workflow[neg_prompt_node_id]["inputs"]:
+                     self.workflow[neg_prompt_node_id]["inputs"]["text"] = self.scene_negative_prompt
+                     print(f"  Set Negative Prompt (Node {neg_prompt_node_id}): {self.scene_negative_prompt[:30]}...")
+                # WanVideoTextEncode might have negative_prompt input too for multi-frame
+                elif self.workflow_type in ["MULTI_REF", "MULTI_CONTEXT"] and neg_prompt_node_id in self.workflow and "negative_prompt" in self.workflow[neg_prompt_node_id]["inputs"]:
+                     self.workflow[neg_prompt_node_id]["inputs"]["negative_prompt"] = self.scene_negative_prompt # Use same negative prompt for now
+                     print(f"  Set Negative Prompt (Node {neg_prompt_node_id}): {self.scene_negative_prompt[:30]}...")
+                elif self.workflow_type == "SINGLE_SDXL": print(f"  Warning: Negative Prompt Node ID '{neg_prompt_node_id}' not found/invalid in SDXL workflow.")
+                # Don't warn if missing in multi-frame, might not be needed
+
+            # Invert Input Boolean (Depth Map for SDXL, Video for Multi)
             if "INVERT_BOOL" in self.node_ids:
                  invert_node_id = self.node_ids["INVERT_BOOL"]
-                 if invert_node_id in self.workflow and "inputs" in self.workflow[invert_node_id]:
+                 if invert_node_id in self.workflow and "inputs" in self.workflow[invert_node_id] and "value" in self.workflow[invert_node_id]["inputs"]:
                       self.workflow[invert_node_id]["inputs"]["value"] = self.scene_invert_depth
                       print(f"  Set Invert Input Bool (Node {invert_node_id}): {self.scene_invert_depth}")
                  else: print(f"  Warning: Invert Bool Node ID '{invert_node_id}' not found/invalid.")
 
-            # ControlNet Strength (Only for Single Frame workflow in this setup)
-            if self.workflow_type == "SINGLE" and "CNET_STRENGTH" in self.node_ids:
+            # ControlNet Strength
+            if "CNET_STRENGTH" in self.node_ids:
                  cn_strength_node_id = self.node_ids["CNET_STRENGTH"]
                  if cn_strength_node_id in self.workflow and "inputs" in self.workflow[cn_strength_node_id]:
-                      # The node is ControlNetApplyAdvanced, strength is direct input
-                      self.workflow[cn_strength_node_id]["inputs"]["strength"] = self.scene_depth_strength # Assuming scene_depth_strength maps here
-                      print(f"  Set ControlNet Strength (Node {cn_strength_node_id}): {self.scene_depth_strength}")
+                      # SDXL ACN node uses 'strength', SD1.5 CNetApplyAdvanced also uses 'strength'
+                      if "strength" in self.workflow[cn_strength_node_id]["inputs"]:
+                          self.workflow[cn_strength_node_id]["inputs"]["strength"] = self.scene_depth_strength
+                          print(f"  Set ControlNet Strength (Node {cn_strength_node_id}): {self.scene_depth_strength}")
+                      else: print(f"  Warning: 'strength' input not found in CNet Node {cn_strength_node_id}.")
                  else: print(f"  Warning: CNet Strength Node ID '{cn_strength_node_id}' not found/invalid.")
 
-            # --- Handle LoRA for SINGLE frame ---
-            if self.workflow_type == "SINGLE":
+            # KSampler Denoise Strength (Only for SINGLE_SDXL)
+            if self.workflow_type == "SINGLE_SDXL":
+                if "KSAMPLER_DENOISE" in self.node_ids:
+                    ksampler_node_id = self.node_ids["KSAMPLER_DENOISE"]
+                    if ksampler_node_id in self.workflow and "inputs" in self.workflow[ksampler_node_id] and "denoise" in self.workflow[ksampler_node_id]["inputs"]:
+                        self.workflow[ksampler_node_id]["inputs"]["denoise"] = self.scene_denoise_strength
+                        print(f"  Set KSampler Denoise (Node {ksampler_node_id}): {self.scene_denoise_strength}")
+                    else: print(f"  Warning: KSampler Denoise Node ID '{ksampler_node_id}' or 'denoise' input not found/invalid.")
+                else: print(f"  Warning: KSampler Denoise Node ID not defined for SINGLE_SDXL workflow.")
+
+
+            # --- Handle LoRA (Should work for SINGLE_SDXL too if node ID is correct) ---
+            # Check workflow type includes SINGLE_SDXL
+            if self.workflow_type == "SINGLE_SDXL":
                 lora_node_id = self.node_ids.get("LORA_LOADER")
                 if lora_node_id and lora_node_id in self.workflow:
                     lora_inputs = self.workflow[lora_node_id]["inputs"]
-                    # Check if a valid LoRA was selected (not NONE or an error indicator)
                     if self.selected_lora_name and self.selected_lora_name != "NONE":
                         lora_inputs["lora_name"] = self.selected_lora_name
                         lora_inputs["strength_model"] = self.selected_lora_strength_model
                         lora_inputs["strength_clip"] = self.selected_lora_strength_clip
                         print(f"  Using LoRA (Node {lora_node_id}): {self.selected_lora_name} (Str M:{self.selected_lora_strength_model:.2f} C:{self.selected_lora_strength_clip:.2f})")
                     else:
-                        # No LoRA selected or an error occurred - Disable LoRA effect
                         lora_inputs["strength_model"] = 0.0
                         lora_inputs["strength_clip"] = 0.0
-                        # Keep a default lora_name, ComfyUI might require *something*
-                        # If the original workflow had a default, it will be used.
-                        # Otherwise, keep whatever was loaded. We could try setting a fallback if needed.
                         print(f"  LoRA Disabled (Node {lora_node_id}): Setting strength to 0.0")
-                        # Optional: Add a fallback name if lora_name might be missing
-                        # if "lora_name" not in lora_inputs or not lora_inputs["lora_name"]:
-                        #     fallback_lora = self._get_first_lora_fallback(bpy.context) # Need context here? Maybe pass it or get during invoke
-                        #     if fallback_lora:
-                        #         lora_inputs["lora_name"] = fallback_lora
-                        #         print(f"    Set fallback LoRA name: {fallback_lora}")
-                        #     else:
-                        #         print(f"    Warning: Could not set a fallback LoRA name.")
-
+                        # Ensure lora_name exists even if disabled
+                        if "lora_name" not in lora_inputs or not lora_inputs["lora_name"]:
+                            # Find a fallback? SDXL LoRA might be different
+                            # For now, assume workflow has a default or handles empty name gracefully
+                            lora_inputs["lora_name"] = "None" # Set explicitly to None if needed
+                            print(f"    Set lora_name to 'None'")
                 else:
                     print(f"  Warning: LoRA Loader Node ID '{lora_node_id}' not found in workflow.")
 
-            # --- 3) Set Workflow-Specific Parameters ---
+
+            # --- 3) Set Workflow-Specific Parameters (Multi-frame) ---
             if self.workflow_type == "MULTI_REF":
                 if "REFERENCE_IMAGE" in self.node_ids:
                     ref_img_node_id = self.node_ids["REFERENCE_IMAGE"]
                     if not self.scene_reference_image_path or not os.path.exists(self.scene_reference_image_path):
-                        # Default to a black image if path is invalid? Or raise error?
-                        # For now, warn and maybe let ComfyUI handle missing input.
                         print(f"  Warning: Reference image path invalid or not set: {self.scene_reference_image_path}")
-                        # Optionally: Set a dummy path or remove the input link if possible
-                        # self.workflow[ref_img_node_id]["inputs"]["image"] = "path/to/dummy/black.png"
                     else:
                         abs_ref_path = os.path.abspath(self.scene_reference_image_path).replace("\\", "/")
                         self.workflow[ref_img_node_id]["inputs"]["image"] = abs_ref_path
@@ -813,7 +966,6 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                 else: print(f"  Warning: Reference Image Node ID not defined for MULTI_REF workflow.")
 
             elif self.workflow_type == "MULTI_CONTEXT":
-                # Set Preceding/Succeeding Image Paths (even if not used by bools)
                 if "PRECEDING_IMAGE" in self.node_ids:
                      prec_img_node_id = self.node_ids["PRECEDING_IMAGE"]
                      if self.preceding_frame_path and os.path.exists(self.preceding_frame_path):
@@ -832,7 +984,6 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                      else: print(f"  Warning: Succeeding frame path invalid/missing for Node {succ_img_node_id}.")
                 else: print(f"  Warning: Succeeding Image Node ID not defined.")
 
-                # Set Boolean Flags for Context Usage
                 if "USE_PRECEDING_BOOL" in self.node_ids:
                      use_prec_node_id = self.node_ids["USE_PRECEDING_BOOL"]
                      if use_prec_node_id in self.workflow and "inputs" in self.workflow[use_prec_node_id]:
@@ -850,27 +1001,26 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                 else: print(f"  Warning: Use Succeeding Bool Node ID not defined.")
 
                 if "VACE_STARTEND_1" in self.node_ids and "VACE_STARTEND_2" in self.node_ids and "VACE_STARTEND_3" in self.node_ids:
-                    num_frames = len(self.frames_to_process) + int(self.scene_use_preceding) + int(self.scene_use_succeeding)
+                    num_frames = len(self.frames_to_process) + int(self.scene_use_succeeding)
+                    print(f"Set num_frames to: {num_frames}. Frames to process: {self.frames_to_process}")
                     self.workflow[self.node_ids["VACE_STARTEND_1"]]["inputs"]["num_frames"] = num_frames
                     self.workflow[self.node_ids["VACE_STARTEND_2"]]["inputs"]["num_frames"] = num_frames
                     self.workflow[self.node_ids["VACE_STARTEND_3"]]["inputs"]["num_frames"] = num_frames
                 else: print(f"  Warning: VACE_STARTEND Node IDs not defined")
 
+
             # --- 4) Queue and Wait ---
             self._thread_status = f"Queueing ComfyUI ({self.workflow_type})"
             self._thread_progress = ""
-            print("\nFinal Workflow (first level inputs):")
-            for node_id, node_data in self.workflow.items():
-                if "inputs" in node_data:
-                    print(f"  Node {node_id} ({node_data.get('class_type', 'Unknown')}): {node_data['inputs']}")
-                else:
-                    print(f"  Node {node_id} ({node_data.get('class_type', 'Unknown')}): No inputs key")
-            print("-" * 20)
+            # print("\nFinal Workflow (first level inputs):")
+            # for node_id, node_data in self.workflow.items():
+            #     if "inputs" in node_data:
+            #         print(f"  Node {node_id} ({node_data.get('class_type', 'Unknown')}): {node_data['inputs']}")
+            #     else:
+            #         print(f"  Node {node_id} ({node_data.get('class_type', 'Unknown')}): No inputs key")
+            # print("-" * 20)
 
-
-            queue_response = queue_comfyui_prompt(
-                self.workflow, self.server_address, self.client_id
-            )
+            queue_response = queue_comfyui_prompt(self.workflow, self.server_address, self.client_id)
             prompt_id = queue_response.get("prompt_id")
             if not prompt_id: raise RuntimeError(f"Did not receive prompt_id. Response: {queue_response}")
             print(f"ComfyUI Prompt ID: {prompt_id}")
@@ -879,28 +1029,23 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             self._thread_progress = ""
 
             def progress_update(message):
-                # Update shared status variables for modal UI
-                self._thread_status = f"Waiting (Prompt: {prompt_id[:8]}...)" # Keep status simple
-                self._thread_progress = message # Show detailed progress
+                self._thread_status = f"Waiting (Prompt: {prompt_id[:8]}...)"
+                self._thread_progress = message
 
-            # Get the specific output node ID for the current workflow
-            output_node_id = self.node_ids.get("OUTPUT_DECODE") # Use the decode node
-            if not output_node_id:
-                 output_node_id = self.node_ids.get("SAVE_IMAGE") # Fallback for single?
+            output_node_id = self.node_ids.get("OUTPUT_DECODE")
             if not output_node_id:
                  raise ValueError(f"Could not determine output node ID for workflow type {self.workflow_type}")
             print(f"Waiting for results from Node ID: {output_node_id}")
 
             output_images_data = get_comfyui_images_ws(
                 prompt_id, self.server_address, self.client_id,
-                output_node_id, # Pass the dynamically determined output node
-                progress_callback=progress_update
+                output_node_id, progress_callback=progress_update
             )
 
             # --- Success ---
             self._thread_status = "Received results from ComfyUI."
             self._thread_progress = f"{len(output_images_data)} image(s)"
-            self._result_queue.put(output_images_data) # Put list of image data bytes
+            self._result_queue.put(output_images_data)
 
         except Exception as e:
             # --- Failure ---
@@ -908,9 +1053,8 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             self._thread_status = "Error during ComfyUI interaction."
             self._thread_progress = f"{type(e).__name__}: {error_short}"
             print(f"Error in worker thread: {e}")
-            import traceback
-            traceback.print_exc()
-            self._result_queue.put(e) # Put the exception object
+            import traceback; traceback.print_exc()
+            self._result_queue.put(e)
 
     # --- Main Execution Logic (Called by Modal on Completion) ---
     def execute_finish(self, context):
@@ -926,7 +1070,7 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             return {"CANCELLED"}
         gpd = gp_object.data
 
-        # --- Handle Final Result (Error or Image List) ---
+        # --- Handle Final Result ---
         if isinstance(self.final_result, Exception):
             error_short = str(self.final_result).splitlines()[0] if str(self.final_result) else type(self.final_result).__name__
             self.report({"ERROR"}, f"Worker thread error: {type(self.final_result).__name__}: {error_short}")
@@ -938,19 +1082,21 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         elif not isinstance(self.final_result, list):
              self.report({"ERROR"}, f"Unexpected result type: {type(self.final_result)}"); wm.comfyui_modal_status = "Finished with Error"; wm.comfyui_modal_progress = f"Internal error: Bad result type"
              return {"CANCELLED"}
-        # Empty list is now handled below after slicing
 
         # --- Prepare for GP Reference Creation ---
         print(f"Execute Finish received {len(self.final_result)} raw image(s) for workflow {self.workflow_type}.")
         self.output_img_paths = []
 
-        # --- Adjust Image List based on Context Workflow ---
+        # --- Adjust Image List based on Context Workflow (Multi-frame only) ---
         images_to_process = self.final_result
         expected_frame_count = len(self.frames_to_process)
         frames_for_gp = list(self.frames_to_process) # Copy the list
 
+        # Offset is because when using preceding frame, an extra frame is loaded, as the workflow replaces the first frame rather than adding it. (But it adds the last frame, so no adjustment needed there)
+        offset = 0
         if self.workflow_type == "MULTI_CONTEXT":
             print("Context workflow detected, adjusting output image list...")
+            offset = int(self.scene_use_preceding)
             start_index = 0
             end_index = len(self.final_result)
 
@@ -961,12 +1107,11 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                 else: print("  Warning: Expected preceding frame in output, but received no images.")
 
             if self.scene_use_succeeding:
-                 if len(images_to_process) > start_index : # Check if there's at least one image left to potentially remove
+                 if len(images_to_process) > start_index :
                     print("  Skipping last image (succeeding frame context).")
                     end_index -= 1
                  else: print("  Warning: Expected succeeding frame in output, but not enough images received.")
 
-            # Ensure start_index is not greater than end_index
             if start_index >= end_index:
                  print(f"  Warning: After slicing for context frames, no images remain (start: {start_index}, end: {end_index}).")
                  images_to_process = []
@@ -975,12 +1120,10 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
             print(f"  Sliced images: {len(images_to_process)} image(s) remain for GP references.")
 
-            # --- Sanity Check: Match sliced images count with original frame request count ---
             if len(images_to_process) != expected_frame_count:
                  print(f"  WARNING: Number of images after slicing ({len(images_to_process)}) "
                        f"does not match the number of requested frames ({expected_frame_count}). "
                        f"GP frame assignment might be incorrect.")
-                 # Attempt to truncate frames_for_gp if too long, or warn if too short
                  if len(frames_for_gp) > len(images_to_process):
                       frames_for_gp = frames_for_gp[:len(images_to_process)]
                       print(f"  Adjusted frames for GP to {len(frames_for_gp)} based on available images.")
@@ -993,9 +1136,8 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         self.report({"INFO"}, f"Processing {len(images_to_process)} image(s). Creating GP references...")
         wm.progress_begin(0, len(images_to_process))
 
-        # --- Find a suitable 3D Viewport context ---
+        # --- Find a suitable 3D Viewport context (Unchanged) ---
         view3d_area = None; view3d_region = None
-        # (Context finding logic - unchanged from previous)
         if context.area and context.area.type == 'VIEW_3D':
             view3d_area = context.area; view3d_region = next((r for r in view3d_area.regions if r.type == 'WINDOW'), None)
         if not (view3d_area and view3d_region):
@@ -1038,13 +1180,9 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
                 # --- Loop through images to process ---
                 for i, img_data in enumerate(images_to_process):
-                    # Determine frame number carefully
-                    if i < len(frames_for_gp):
-                        frame_num = frames_for_gp[i]
-                    else:
-                        # Fallback if frame list doesn't match image list (shouldn't happen with checks above)
-                        frame_num = self.original_frame + i
-                        print(f"  Warning: Using fallback frame num {frame_num} for image index {i}.")
+                    # Determine frame number
+                    if i < len(frames_for_gp): frame_num = frames_for_gp[i] + offset
+                    else: frame_num = self.original_frame + i; print(f"  Warning: Using fallback frame num {frame_num} for image index {i}.")
 
                     current_status = f"Processing output {i+1}/{num_to_process}"; current_progress = f"Frame {frame_num}"
                     wm.comfyui_modal_status = current_status; wm.comfyui_modal_progress = current_progress
@@ -1073,8 +1211,6 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
                         # Call SPA GP Reference Import
                         print(f"  Calling import_image_as_gp_reference for '{output_img_path}'...")
-                        # *** NOTE: SPA function might resize based on camera view, ignoring the 960x720 output aspect ratio ***
-                        # This is likely the desired behavior - fitting the reference to the current camera.
                         spa_gp_core.import_image_as_gp_reference(
                             context=context, obj=gp_object, img_filepath=output_img_path,
                             pack_image=True, add_new_layer=False, add_new_keyframe=True,
@@ -1085,8 +1221,8 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                     except Exception as e:
                         self.report({"ERROR"}, f"Failed creating GP reference for image {i} (frame {frame_num}): {e}")
                         import traceback; traceback.print_exc()
-                        if os.path.exists(output_img_path): 
-                            try: os.remove(output_img_path); 
+                        if os.path.exists(output_img_path):
+                            try: os.remove(output_img_path);
                             except OSError: pass
                     finally:
                          wm.progress_update(i + 1)
@@ -1105,7 +1241,6 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         wm.progress_end()
 
         # --- Restore original mode if different from OBJECT ---
-        # (Mode restoration logic - unchanged from previous)
         if original_mode_at_start != 'OBJECT':
             print(f"Attempting to restore original mode ({original_mode_at_start}) for object '{gp_object.name}'...")
             try:
@@ -1116,7 +1251,6 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                      else: print(f"  Cannot restore non-standard original mode: '{original_mode_at_start}'.")
                 else: print(f"  Cannot restore original mode, GP object '{self.target_gp_object_name}' not found.")
             except Exception as e: print(f"Could not restore original mode {original_mode_at_start}: {e}")
-
 
         final_op_status = f"Successfully created {success_count} / {num_to_process} GP references in '{gp_object.name}'."
         self.report({"INFO"}, final_op_status)
@@ -1158,7 +1292,6 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
         return {"PASS_THROUGH"}
 
-
     # --- Invoke Method (Starts the process) ---
     def invoke(self, context, event):
         # Poll checks handle preconditions
@@ -1173,13 +1306,17 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             self.report({"ERROR"}, "ComfyUI server address invalid in preferences."); bpy.ops.preferences.open_comfyui_addon_prefs('INVOKE_DEFAULT'); return {"CANCELLED"}
 
         # --- Get Target GP Object and Settings ---
-        self.target_gp_object_name = context.active_object.name
+        gp_object = context.active_object # Already validated by poll
+        self.target_gp_object_name = gp_object.name
         scene_props = context.scene.comfyui_props
 
         # Store settings for the thread
         self.scene_user_prompt = scene_props.user_prompt
+        self.scene_negative_prompt = scene_props.negative_prompt # <<< NEW
+        self.scene_denoise_strength = scene_props.denoise_strength # <<< NEW
+        self.scene_depth_map_layer = scene_props.depth_map_layer # <<< NEW
         self.scene_frame_rate = scene_props.frame_rate
-        self.scene_depth_strength = scene_props.controlnet_depth_strength # Might be unused by some workflows
+        self.scene_depth_strength = scene_props.controlnet_depth_strength # CN Strength
         self.scene_invert_depth = scene_props.invert_depth_input
         self.scene_reference_image_path = bpy.path.abspath(scene_props.reference_image_path) if scene_props.reference_image_path else ""
         self.scene_use_preceding = scene_props.use_preceding_frame
@@ -1199,36 +1336,41 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         self.succeeding_frame_path = None
         preceding_frame_num = None
         succeeding_frame_num = None
+        self.base_image_path = None # Reset single frame paths
+        self.depth_map_path = None
 
+        # Frame mode determines workflow
         if scene_props.frame_mode == "CURRENT":
-            self.workflow_type = "SINGLE"
+            self.workflow_type = "SINGLE_SDXL"
             self.frames_to_process = [self.original_frame]
+             # Validate depth layer selection again (belt and suspenders)
+            if not self.scene_depth_map_layer or self.scene_depth_map_layer == "NONE" or self.scene_depth_map_layer not in gp_object.data.layers:
+                 self.report({"ERROR"}, f"Invalid/missing GP Depth Layer: '{self.scene_depth_map_layer}'"); return {"CANCELLED"}
+            if self.selected_lora_name in ["INVALID_PATH", "SCAN_ERROR"]:
+                 self.report({"ERROR"}, f"Cannot run: Invalid LoRA setting ({self.selected_lora_name})."); return {"CANCELLED"}
+
         else: # RANGE
             start_f = scene_props.frame_start
             end_f = scene_props.frame_end
             if start_f > end_f: self.report({"ERROR"}, "Start frame > End frame."); return {"CANCELLED"}
-            self.frames_to_process = list(range(start_f, end_f + 1))
+            # Take an extra frame for preceding, because the workflow replaces the first frame, but adds an additional last frame when specified, so no adjustment needed for succeeding.
+            self.frames_to_process = list(range(start_f - int(self.scene_use_preceding), end_f + 1))
 
             if self.scene_use_preceding or self.scene_use_succeeding:
                 self.workflow_type = "MULTI_CONTEXT"
                 if self.scene_use_preceding:
                     preceding_frame_num = start_f - 1
-                    if preceding_frame_num < 0: # Or scene.frame_start?
+                    if preceding_frame_num < 0:
                          self.report({"WARNING"}, f"Cannot get preceding frame for start frame {start_f}. Disabling.")
                          self.scene_use_preceding = False # Turn off if invalid
                          preceding_frame_num = None
                 if self.scene_use_succeeding:
                      succeeding_frame_num = end_f + 1
-                     # Check against scene.frame_end?
-                     # if succeeding_frame_num > context.scene.frame_end:
-                     #     self.report({"WARNING"}, f"Cannot get succeeding frame past scene end {context.scene.frame_end}. Disabling.")
-                     #     self.scene_use_succeeding = False
-                     #     succeeding_frame_num = None
 
             else: # Neither context frame selected
                  self.workflow_type = "MULTI_REF"
                  if not self.scene_reference_image_path or not os.path.exists(self.scene_reference_image_path):
-                      self.report({"ERROR"}, f"Reference image required for this mode, but path is invalid/not set: '{self.scene_reference_image_path}'")
+                      self.report({"ERROR"}, f"Reference image required for MULTI_REF mode, but path is invalid/not set: '{self.scene_reference_image_path}'")
                       return {"CANCELLED"}
 
         if not self.frames_to_process: self.report({"WARNING"}, "No frames selected."); return {"CANCELLED"}
@@ -1236,13 +1378,7 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         print(f"Frames to process: {self.frames_to_process}")
         if preceding_frame_num is not None: print(f"Preceding frame: {preceding_frame_num}")
         if succeeding_frame_num is not None: print(f"Succeeding frame: {succeeding_frame_num}")
-
-        if self.workflow_type == "SINGLE":
-            if self.selected_lora_name in ["INVALID_PATH", "SCAN_ERROR"]:
-                 self.report({"ERROR"}, f"Cannot run: Invalid LoRA setting ({self.selected_lora_name}). Check addon preferences or directory.")
-                 return {"CANCELLED"}
-             # Optional: Check if NONE is selected but the workflow absolutely requires a LoRA file name
-             # For now, we assume disabling strength is enough.
+        if self.workflow_type == "SINGLE_SDXL": print(f"GP Depth Layer: {self.scene_depth_map_layer}")
 
         # --- Load Workflow JSON ---
         workflow_filename = WORKFLOW_FILES.get(self.workflow_type)
@@ -1251,17 +1387,21 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         if not os.path.exists(workflow_filepath): self.report({"ERROR"}, f"Workflow file not found: {workflow_filepath}"); return {"CANCELLED"}
 
         try:
-            with open(workflow_filepath, 'r') as f:
-                self.workflow = json.load(f)
+            with open(workflow_filepath, 'r') as f: self.workflow = json.load(f)
             self.node_ids = WORKFLOW_NODE_IDS.get(self.workflow_type)
             if not self.node_ids: raise ValueError(f"Node ID mapping not defined for workflow type {self.workflow_type}")
             print(f"Loaded workflow from: {workflow_filepath}")
-            # Basic validation (optional): Check if expected node IDs exist in the loaded workflow
+            # Basic validation
             for key, node_id in self.node_ids.items():
                  if node_id not in self.workflow:
-                     # Make missing output node non-fatal for now, handled in worker thread
-                     if key not in ["OUTPUT_DECODE", "SAVE_IMAGE", "VIDEO_COMBINE", "NEGATIVE_PROMPT"]: # Allow optional/alternative nodes
+                     # Allow some optional/alternative nodes to be missing
+                     optional_keys = ["OUTPUT_DECODE", "VIDEO_COMBINE", "NEGATIVE_PROMPT",
+                                      "CHECKPOINT_LOADER", "CONTROLNET_LOADER",
+                                      "VAE_ENCODE_BASE", "RESIZE_DEPTH", "RESIZE_BASE"] # <<< MODIFIED Allow more optional
+                     if key not in optional_keys:
                          raise ValueError(f"Workflow {workflow_filename} missing expected node ID for '{key}': {node_id}")
+                     else:
+                         print(f"  Note: Optional node ID for '{key}' ({node_id}) not found in workflow.")
 
         except (json.JSONDecodeError, ValueError, KeyError, Exception) as e:
             self.report({"ERROR"}, f"Failed to load/validate workflow '{workflow_filepath}': {e}")
@@ -1275,19 +1415,10 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         except Exception as e:
             self.report({"ERROR"}, f"Failed to create temp directory: {e}"); self._cleanup_temp_files(); return {"CANCELLED"}
 
-        # --- SYNCHRONOUS Frame Capture ---
-        capture_frames = list(self.frames_to_process) # Copy
-        if preceding_frame_num is not None: capture_frames.append(preceding_frame_num)
-        if succeeding_frame_num is not None: capture_frames.append(succeeding_frame_num)
-        capture_frames = sorted(list(set(capture_frames))) # Unique and sorted
-
-        self._thread_status = "Capturing frames..."; self._thread_progress = ""
-        wm.comfyui_modal_status = self._thread_status; wm.comfyui_modal_progress = self._thread_progress
-        context.workspace.status_text_set(f"ComfyUI: {self._thread_status} (May take time)")
-        self.report({"INFO"}, f"Capturing {len(capture_frames)} frame(s)...")
-        wm.progress_begin(0, len(capture_frames))
-        self.frame_paths = {} # Reset frame paths dict
+        # --- SYNCHRONOUS Frame/Layer Capture ---
+        # Capture Logic
         capture_success = True
+        self.frame_paths = {} # Reset frame paths dict (used for multi-frame base)
 
         # Switch to Object mode for capture stability
         mode_switched_for_capture = False
@@ -1296,30 +1427,129 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             except Exception as e: self.report({"WARNING"}, f"Could not switch to Object mode for capture: {e}")
 
         capture_start_time = time.time()
-        for i, frame_num in enumerate(capture_frames):
-            frame_start_time = time.time()
-            context.scene.frame_set(frame_num)
-            self._thread_progress = f"{i+1}/{len(capture_frames)} (Frame {frame_num})"
-            wm.progress_update(i); context.view_layer.update()
 
-            # Use the frame number in the filename (handles non-sequential captures)
-            frame_filename = self.frame_pattern % frame_num
-            output_path = os.path.join(self.temp_dir_path, frame_filename)
+        if self.workflow_type == "SINGLE_SDXL":
+            # Capture Base Image (Viewport) and Depth Map (GP Layer) for the current frame
+            frame_num = self.original_frame
+            self._thread_status = "Capturing inputs..."; self._thread_progress = f"Frame {frame_num}"
+            wm.comfyui_modal_status = self._thread_status; wm.comfyui_modal_progress = self._thread_progress
+            context.workspace.status_text_set(f"ComfyUI: {self._thread_status} (Frame {frame_num})")
+            self.report({"INFO"}, f"Capturing Base Image and Depth Layer for frame {frame_num}...")
+            wm.progress_begin(0, 2) # 2 steps: base + depth
+
             try:
-                print(f"Capturing frame {frame_num} to {output_path}...")
-                capture_viewport(output_path, context)
-                self.frame_paths[frame_num] = output_path # Store path by frame number
-                print(f"  Frame {frame_num} captured in {time.time() - frame_start_time:.2f}s")
+                # 1. Capture Base Image (Viewport)
+                wm.progress_update(0); self._thread_progress = f"Frame {frame_num} (Base Image)"
+                base_filename = self.frame_pattern % frame_num
+                base_output_path = os.path.join(self.temp_dir_path, base_filename)
+                print(f"Capturing base image (viewport) to {base_output_path}...")
+                capture_viewport(base_output_path, context)
+                self.base_image_path = base_output_path
+                print(f"  Base image captured.")
 
-                # Store paths for context frames specifically
-                if frame_num == preceding_frame_num: self.preceding_frame_path = output_path
-                if frame_num == succeeding_frame_num: self.succeeding_frame_path = output_path
+                # 2. Capture Depth Map (GP Layer)
+                wm.progress_update(1); self._thread_progress = f"Frame {frame_num} (Depth Layer: {self.scene_depth_map_layer})"
+                depth_filename = self.depth_pattern % frame_num
+                depth_output_path = os.path.join(self.temp_dir_path, depth_filename)
+                print(f"Capturing depth map (GP Layer '{self.scene_depth_map_layer}') to {depth_output_path}...")
+                capture_gp_layer(depth_output_path, context, gp_object, self.scene_depth_map_layer)
+                self.depth_map_path = depth_output_path
+                print(f"  Depth map captured.")
+                wm.progress_update(2)
 
             except Exception as e:
-                self.report({"ERROR"}, f"Failed to capture frame {frame_num}: {e}"); import traceback; traceback.print_exc()
-                capture_success = False; break
+                self.report({"ERROR"}, f"Failed during single frame capture: {e}"); import traceback; traceback.print_exc()
+                capture_success = False
 
-        wm.progress_end()
+            wm.progress_end()
+
+        else: # MULTI_REF or MULTI_CONTEXT
+            # Check GP Layer selection is valid (already done by poll, but good double check)
+            if not self.scene_depth_map_layer or self.scene_depth_map_layer == "NONE" or self.scene_depth_map_layer == "NO_GP_OBJECT" or self.scene_depth_map_layer == "NO_LAYERS" or self.scene_depth_map_layer not in gp_object.data.layers:
+                 # This case should ideally be caught by poll, but if not...
+                 self.report({"ERROR"}, f"Invalid GP Depth Layer selected for multi-frame: '{self.scene_depth_map_layer}'. Aborting.");
+                 self._cleanup_temp_files()
+                 wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None)
+                 return {"CANCELLED"}
+
+            # --- Determine total steps for progress bar ---
+            total_capture_steps = len(self.frames_to_process) # GP layers for main sequence
+            if preceding_frame_num is not None: total_capture_steps += 1
+            if succeeding_frame_num is not None: total_capture_steps += 1
+
+            self._thread_status = "Capturing Layers/Frames..."; self._thread_progress = ""
+            wm.comfyui_modal_status = self._thread_status; wm.comfyui_modal_progress = self._thread_progress
+            context.workspace.status_text_set(f"ComfyUI: {self._thread_status} (Multi-Frame)")
+            self.report({"INFO"}, f"Capturing {len(self.frames_to_process)} GP layer(s) and context frames if needed...")
+            wm.progress_begin(0, total_capture_steps)
+            progress_counter = 0
+            self.frame_paths = {} # Reset / Init. Will store DEPTH paths for the video sequence.
+
+            # --- Capture Main Sequence (GP Layers for Depth Video) ---
+            for i, frame_num in enumerate(self.frames_to_process):
+                if not capture_success: break # Stop if previous step failed
+                frame_start_time = time.time()
+                context.scene.frame_set(frame_num)
+                current_step_info = f"Depth Layer {i+1}/{len(self.frames_to_process)} (Frame {frame_num})"
+                self._thread_progress = f"{progress_counter+1}/{total_capture_steps} ({current_step_info})"
+                wm.progress_update(progress_counter); context.view_layer.update()
+
+                depth_filename = self.depth_pattern % frame_num # Use depth pattern for video files
+                output_path = os.path.join(self.temp_dir_path, depth_filename)
+                try:
+                    print(f"Capturing depth map (GP Layer '{self.scene_depth_map_layer}') for frame {frame_num} to {output_path}...")
+                    capture_gp_layer(output_path, context, gp_object, self.scene_depth_map_layer)
+                    self.frame_paths[frame_num] = output_path # Store DEPTH path for video
+                    print(f"  Depth map for frame {frame_num} captured in {time.time() - frame_start_time:.2f}s")
+                except Exception as e:
+                    self.report({"ERROR"}, f"Failed to capture depth layer for frame {frame_num}: {e}"); import traceback; traceback.print_exc()
+                    capture_success = False # Signal failure
+                finally:
+                    progress_counter += 1 # Increment counter even on failure? Yes, to reflect progress bar correctly
+
+            # --- Capture Context Frames (Viewport) if needed and main capture succeeded ---
+            if capture_success and preceding_frame_num is not None:
+                 frame_start_time = time.time()
+                 context.scene.frame_set(preceding_frame_num)
+                 current_step_info = f"Context Frame {preceding_frame_num}"
+                 self._thread_progress = f"{progress_counter+1}/{total_capture_steps} ({current_step_info})"
+                 wm.progress_update(progress_counter); context.view_layer.update()
+
+                 frame_filename = self.frame_pattern % preceding_frame_num # Use normal pattern for context images
+                 output_path = os.path.join(self.temp_dir_path, frame_filename)
+                 try:
+                     print(f"Capturing PRECEDING context frame {preceding_frame_num} (Viewport) to {output_path}...")
+                     capture_viewport(output_path, context) # Use viewport capture
+                     self.preceding_frame_path = output_path # Store separately for context workflow
+                     print(f"  Preceding context frame {preceding_frame_num} captured in {time.time() - frame_start_time:.2f}s")
+                 except Exception as e:
+                     self.report({"ERROR"}, f"Failed to capture preceding context frame {preceding_frame_num}: {e}"); import traceback; traceback.print_exc()
+                     capture_success = False
+                 finally:
+                      progress_counter += 1
+
+            if capture_success and succeeding_frame_num is not None:
+                 frame_start_time = time.time()
+                 context.scene.frame_set(succeeding_frame_num)
+                 current_step_info = f"Context Frame {succeeding_frame_num}"
+                 self._thread_progress = f"{progress_counter+1}/{total_capture_steps} ({current_step_info})"
+                 wm.progress_update(progress_counter); context.view_layer.update()
+
+                 frame_filename = self.frame_pattern % succeeding_frame_num # Use normal pattern for context images
+                 output_path = os.path.join(self.temp_dir_path, frame_filename)
+                 try:
+                     print(f"Capturing SUCCEEDING context frame {succeeding_frame_num} (Viewport) to {output_path}...")
+                     capture_viewport(output_path, context) # Use viewport capture
+                     self.succeeding_frame_path = output_path # Store separately for context workflow
+                     print(f"  Succeeding context frame {succeeding_frame_num} captured in {time.time() - frame_start_time:.2f}s")
+                 except Exception as e:
+                     self.report({"ERROR"}, f"Failed to capture succeeding context frame {succeeding_frame_num}: {e}"); import traceback; traceback.print_exc()
+                     capture_success = False
+                 finally:
+                      progress_counter += 1
+
+            wm.progress_end()
+
         print(f"Total capture time: {time.time() - capture_start_time:.2f}s")
 
         # Restore original mode if switched
@@ -1330,31 +1560,30 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                 valid_modes = {"OBJECT", "EDIT", "SCULPT", "PAINT", "WEIGHT", "EDIT_GPENCIL", "SCULPT_GPENCIL", "PAINT_GPENCIL", "WEIGHT_GPENCIL"}
                 if self.previous_mode in valid_modes: bpy.ops.object.mode_set(mode=self.previous_mode)
                 else: print(f"  Cannot restore invalid original mode '{self.previous_mode}', staying in Object."); bpy.ops.object.mode_set(mode='OBJECT')
-            except Exception as e: 
-                print(f"Could not restore mode after capture: {e}"); 
-                try: bpy.ops.object.mode_set(mode='OBJECT') 
+            except Exception as e:
+                print(f"Could not restore mode after capture: {e}");
+                try: bpy.ops.object.mode_set(mode='OBJECT')
                 except: pass
 
         # Check capture success
-        if not capture_success or not self.frame_paths:
-            self.report({"ERROR"}, "Frame capture failed. Aborting."); self._cleanup_temp_files()
+        if not capture_success:
+            self.report({"ERROR"}, "Frame/Layer capture failed. Aborting."); self._cleanup_temp_files()
             wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None)
             return {"CANCELLED"}
-        # Verify main sequence frames were captured
-        for f_num in self.frames_to_process:
-            if f_num not in self.frame_paths:
-                self.report({"ERROR"}, f"Missing captured frame for main sequence: {f_num}. Aborting."); self._cleanup_temp_files()
-                wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None)
-                return {"CANCELLED"}
-        # Verify context frames if needed
-        if self.workflow_type == "MULTI_CONTEXT":
-             if self.scene_use_preceding and not self.preceding_frame_path:
-                 self.report({"ERROR"}, "Preceding frame requested but failed to capture/find path. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
-             if self.scene_use_succeeding and not self.succeeding_frame_path:
-                 self.report({"ERROR"}, "Succeeding frame requested but failed to capture/find path. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
 
-        # --- REMOVED DYNAMIC LATENT DIMENSIONS SETTING ---
-        print("Skipping dynamic latent dimension setting (using workflow defaults).")
+        # Verify captures needed for the workflow
+        if self.workflow_type == "SINGLE_SDXL":
+             if not self.base_image_path or not self.depth_map_path:
+                 self.report({"ERROR"}, "Missing captured base or depth map image for SDXL. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
+        else: # Multi-frame checks
+            for f_num in self.frames_to_process:
+                 if f_num not in self.frame_paths:
+                     self.report({"ERROR"}, f"Missing captured frame for main sequence: {f_num}. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
+            if self.workflow_type == "MULTI_CONTEXT":
+                 if self.scene_use_preceding and not self.preceding_frame_path:
+                     self.report({"ERROR"}, "Preceding frame requested but failed to capture/find path. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
+                 if self.scene_use_succeeding and not self.succeeding_frame_path:
+                     self.report({"ERROR"}, "Succeeding frame requested but failed to capture/find path. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
 
         # --- Start Background Thread ---
         self._result_queue = queue.Queue()
@@ -1381,26 +1610,21 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         print(f"Finishing or cancelling GP operation (Cancelled: {cancelled})")
         wm = context.window_manager
 
-        # Timer is removed automatically by returning FINISHED/CANCELLED
-        self._timer = None
+        self._timer = None # Timer removed automatically
 
-        # Clear status bar and WM state
         context.workspace.status_text_set(None)
         wm.comfyui_modal_operator_running = False
         if cancelled and wm.comfyui_modal_status != "Finished with Error":
             wm.comfyui_modal_status = "Cancelled"; wm.comfyui_modal_progress = ""
 
-        # Ensure thread is finished
         if self._thread and self._thread.is_alive():
             print("Warning: Worker thread still alive. Attempting join...")
             self._thread.join(timeout=5.0)
             if self._thread.is_alive(): print("ERROR: Worker thread did not terminate!")
         self._thread = None
 
-        # Cleanup temporary files
         self._cleanup_temp_files()
 
-        # Restore Blender state (frame, selection, mode)
         try:
             # Restore frame
             if hasattr(self, "original_frame"):
@@ -1415,6 +1639,7 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             prev_mode = getattr(self, "previous_mode", None)
             if original_gp_obj and prev_mode:
                  print(f"Restoring selection/mode to: {original_gp_obj.name} / {prev_mode}")
+                 # ... (selection/mode restore logic unchanged) ...
                  try:
                      current_mode = context.mode
                      if current_mode != 'OBJECT': bpy.ops.object.mode_set(mode='OBJECT')
@@ -1435,7 +1660,7 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         return {"CANCELLED"} if cancelled else {"FINISHED"}
 
 
-    # --- Cleanup Helper (Unchanged) ---
+    # --- Cleanup Helper ---
     def _cleanup_temp_files(self):
         """ Helper to remove temporary files and directory using shutil. """
         if hasattr(self, "temp_dir_obj") and self.temp_dir_obj:
@@ -1455,13 +1680,13 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         # Clear lists and paths
         self.frame_paths = {}; self.output_img_paths = []; self.temp_video_path = None
         self.preceding_frame_path = None; self.succeeding_frame_path = None
+        self.base_image_path = None; self.depth_map_path = None
 
 
 # -------------------------------------------------------------------
 # HELPER OPERATOR: Open Addon Preferences (Unchanged)
 # -------------------------------------------------------------------
 class PREFERENCES_OT_open_comfyui_addon_prefs(bpy.types.Operator):
-    """Opens the preferences specific to this addon"""
     bl_idname = "preferences.open_comfyui_addon_prefs"
     bl_label = "Open ComfyUI Addon Preferences"
     bl_options = {"REGISTER", "INTERNAL"}
@@ -1472,7 +1697,6 @@ class PREFERENCES_OT_open_comfyui_addon_prefs(bpy.types.Operator):
         try:
             bpy.ops.screen.userpref_show("INVOKE_DEFAULT")
             bpy.context.preferences.active_section = "ADDONS"
-            # Try to find prefs window/area and filter
             prefs_window = next((w for w in context.window_manager.windows if w.screen.name == "User Preferences"), None)
             if prefs_window:
                  prefs_area = next((a for a in prefs_window.screen.areas if a.type == 'PREFERENCES'), None)
@@ -1485,11 +1709,11 @@ class PREFERENCES_OT_open_comfyui_addon_prefs(bpy.types.Operator):
 # PANEL: UI in the 3D View sidebar
 # -------------------------------------------------------------------
 class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
-    bl_label = "ComfyUI GP Gen v3" # Updated Label
-    bl_idname = "VIEW3D_PT_comfyui_gp_panel_v3" # Unique ID
+    bl_label = "ComfyUI GP Gen v3.1 (SDXL)" # <<< MODIFIED
+    bl_idname = "VIEW3D_PT_comfyui_gp_panel_v3" # Keep ID same for continuity
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "ComfyUI" # Tab name
+    bl_category = "ComfyUI"
 
     @classmethod
     def poll(cls, context): return SPA_GP_AVAILABLE and hasattr(spa_gp_core, 'import_image_as_gp_reference')
@@ -1503,8 +1727,7 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
 
         # --- Main Operator Button ---
         row = layout.row()
-        # Poll method handles active GP object check
-        op = row.operator(OBJECT_OT_run_comfyui_modal.bl_idname, icon="PLAY", text="Run Workflow") # Simpler Text
+        op = row.operator(OBJECT_OT_run_comfyui_modal.bl_idname, icon="PLAY", text="Run Workflow")
         row.enabled = not is_running
 
         # --- Status Display ---
@@ -1523,13 +1746,31 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
         col = layout.column(align=True)
         col.enabled = not is_running
 
-        col.prop(scene_props, "user_prompt")
+        col.prop(scene_props, "user_prompt", text="Prompt")
+        col.prop(scene_props, "negative_prompt")
+        col.separator()
+
+        col.label(text="Depth Map Input:")
+        col.prop(scene_props, "depth_map_layer", text="GP Layer")
+        # Add info/warning based on enum value (useful feedback)
+        active_obj = context.active_object # Get active obj for context
+        if not active_obj or active_obj.type != 'GPENCIL': msg = "Select GP Object!"
+        elif not active_obj.data or not active_obj.data.layers: msg = "GP Object has no layers!"
+        elif scene_props.depth_map_layer == "NONE": msg = "Select a layer"
+        elif scene_props.depth_map_layer not in active_obj.data.layers: msg = f"Layer '{scene_props.depth_map_layer}' not found!"
+        else: msg = "" # Valid selection
+        if msg:
+             row = col.row(align=True)
+             row.alignment = 'RIGHT'
+             row.label(text=msg, icon='ERROR')
+
         col.separator()
         col.prop(scene_props, "frame_mode")
 
         # --- Frame Range Specific Options ---
         if scene_props.frame_mode == "RANGE":
             box = col.box()
+            box.label(text="Multi-Frame Settings:") # Clarify section
             row = box.row(align=True)
             row.prop(scene_props, "frame_start", text="Start")
             row.prop(scene_props, "frame_end", text="End")
@@ -1539,61 +1780,58 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
 
             # --- Context Frame Options ---
             box_context = box.box()
-            box_context.label(text="Context Frames (Multiframe Context Workflow):")
+            box_context.label(text="Context Frames (Uses 'Context' Workflow):")
             row_context = box_context.row(align=True)
             row_context.prop(scene_props, "use_preceding_frame", text="Use Preceding", toggle=True, icon='TRIA_LEFT')
             row_context.prop(scene_props, "use_succeeding_frame", text="Use Succeeding", toggle=True, icon='TRIA_RIGHT')
 
-            # --- Reference Image Option (Show only if context frames NOT used) ---
+            # --- Reference Image Option ---
             if not scene_props.use_preceding_frame and not scene_props.use_succeeding_frame:
                  box_ref = box.box()
-                 box_ref.label(text="Reference Image (Multiframe Reference Workflow):")
-                 box_ref.prop(scene_props, "reference_image_path", text="") # No label needed, path is clear
-                 # Add warning if path invalid?
+                 box_ref.label(text="Reference Image (Uses 'Reference' Workflow):")
+                 box_ref.prop(scene_props, "reference_image_path", text="")
                  ref_path = bpy.path.abspath(scene_props.reference_image_path) if scene_props.reference_image_path else ""
                  if scene_props.reference_image_path and not os.path.exists(ref_path):
                      box_ref.label(text="File not found!", icon='ERROR')
 
-
-        # --- Moved Frame Rate for Current Frame ---
+        # --- Current Frame (SDXL) Specific Options ---
         elif scene_props.frame_mode == "CURRENT":
-            # Frame rate isn't really used for single frame, but keep UI consistent?
-            # Or hide it? Let's keep it but maybe disable or label it.
-            row = col.row()
-            row.prop(scene_props, "frame_rate")
-            row.enabled = False # Disable for single frame as video not created
-            # Could add label: layout.label(text="(Frame rate used for video modes)")
+            box_sdxl = col.box()
+            box_sdxl.label(text="Single Frame (SDXL) Settings:")
 
-            box_lora = col.box()
-            box_lora.label(text="LoRA Settings (Single Frame):")
-            box_lora.prop(scene_props, "selected_lora")
-            # Show strength only if a LoRA is selected
-            if scene_props.selected_lora != "NONE" and scene_props.selected_lora != "INVALID_PATH" and scene_props.selected_lora != "SCAN_ERROR":
+            # Denoise Strength for Img2Img
+            box_sdxl.prop(scene_props, "denoise_strength", text="Denoise Strength")
+
+            # LoRA Selection
+            box_lora = box_sdxl.box()
+            box_lora.label(text="LoRA:")
+            box_lora.prop(scene_props, "selected_lora", text="") # No label needed, enum shows name
+            # Show strength only if a valid LoRA is selected
+            if scene_props.selected_lora not in ["NONE", "INVALID_PATH", "SCAN_ERROR"]:
                 row_lora_str = box_lora.row(align=True)
-                row_lora_str.prop(scene_props, "lora_strength_model", text="Model Str.")
-                row_lora_str.prop(scene_props, "lora_strength_clip", text="CLIP Str.")
+                row_lora_str.prop(scene_props, "lora_strength_model", text="Model")
+                row_lora_str.prop(scene_props, "lora_strength_clip", text="CLIP")
 
         col.separator()
 
-        # --- Common Settings (like Invert Depth) ---
+        # --- Common Settings ---
         box_common = col.box()
-        box_common.label(text="Common Settings:")
-        box_common.prop(scene_props, "invert_depth_input", text="Invert Input for Depth/Control") # Clarify purpose
-        # CN Strength only applies to single frame workflow now
-        if scene_props.frame_mode == "CURRENT":
-             box_common.prop(scene_props, "controlnet_depth_strength", text="ControlNet Strength")
-        else:
-             # Optionally show it disabled or hide it for multi-frame
-             row = box_common.row()
-             row.prop(scene_props, "controlnet_depth_strength", text="ControlNet Strength")
-             row.enabled = False # Disable for non-single frame modes
-             # box_common.label(text="(CN Strength only for Single Frame workflow)")
+        box_common.label(text="Common Control Settings:")
+        box_common.prop(scene_props, "invert_depth_input", text="Invert Depth/Control Input")
+        # ControlNet Strength (applies to all workflows with a CNet node)
+        box_common.prop(scene_props, "controlnet_depth_strength", text="ControlNet Strength")
+        # Disable CN strength if multi-frame? Or keep it enabled? Let's keep enabled for now.
+        # row = box_common.row()
+        # row.prop(scene_props, "controlnet_depth_strength", text="ControlNet Strength")
+        # row.enabled = (scene_props.frame_mode == "CURRENT") # Example if disabling needed
 
         layout.separator()
-        # --- Preferences Button ---
         layout.operator(PREFERENCES_OT_open_comfyui_addon_prefs.bl_idname, text="Settings", icon="PREFERENCES")
 
 
+# -------------------------------------------------------------------
+# HELPER: Dynamic Enum Getters
+# -------------------------------------------------------------------
 def get_lora_items(self, context):
     """ Dynamically generates enum items for available LoRA files. """
     items = [("NONE", "None", "Do not use any LoRA")]
@@ -1603,20 +1841,34 @@ def get_lora_items(self, context):
     if not lora_dir or not os.path.isdir(lora_dir):
         items.append(("INVALID_PATH", "LoRA Path Invalid!", "Set LoRA directory in addon preferences"))
         return items
-
     try:
         valid_extensions = (".pt", ".safetensors")
         count = 0
         for filename in sorted(os.listdir(lora_dir)):
             if filename.lower().endswith(valid_extensions) and os.path.isfile(os.path.join(lora_dir, filename)):
-                # Identifier, Name, Description
                 items.append((filename, filename, f"Use LoRA: {filename}"))
                 count += 1
-        # print(f"Found {count} LoRA files in {lora_dir}")
-
     except Exception as e:
         print(f"Error scanning LoRA directory '{lora_dir}': {e}")
         items.append(("SCAN_ERROR", "Error Scanning Dir", f"Check console/permissions for {lora_dir}"))
+    return items
+
+# Helper Function for GP Layer Enum
+def get_gp_layer_items(self, context):
+    """ Dynamically generates enum items for GP layers of the active object. """
+    items = [("NONE", "Select Layer...", "Choose the Grease Pencil layer to use as depth map")]
+    active_obj = context.active_object
+
+    if not active_obj or active_obj.type != 'GPENCIL':
+        items.append(("NO_GP_OBJECT", "No Active GP Object", "Select a Grease Pencil object in the scene"))
+        return items
+    if not active_obj.data or not active_obj.data.layers:
+        items.append(("NO_LAYERS", "GP Object Has No Layers", "Add layers to the active Grease Pencil object"))
+        return items
+
+    gp_data = active_obj.data
+    for layer in gp_data.layers:
+        items.append((layer.info, layer.info, f"Use layer: {layer.info}"))
 
     return items
 
@@ -1629,54 +1881,39 @@ class ComfyUISceneProperties(bpy.types.PropertyGroup):
         description="Positive prompt for the ComfyUI workflow",
         default="cinematic, masterpiece, best quality, 1girl, detailed",
     )
+    # Negative Prompt
+    negative_prompt: bpy.props.StringProperty(
+        name="Negative Prompt",
+        description="Negative prompt for the ComfyUI workflow (especially SDXL)",
+        default="worst quality, low quality, bad anatomy, bad hands, text, error",
+    )
     frame_mode: bpy.props.EnumProperty(
         items=[
-            ("CURRENT", "Current Frame", "Use singleframe workflow"),
-            ("RANGE", "Frame Range", "Use multiframe workflow (Reference or Context)"),
+            ("CURRENT", "Current Frame (SDXL)", "Use singleframe SDXL img2img workflow"), # <<< MODIFIED Label
+            ("RANGE", "Frame Range (Multi)", "Use multiframe workflow (Reference or Context)"),
         ],
         default="CURRENT",
         name="Frame Mode",
         description="Choose workflow type based on frame selection",
     )
+    # GP Layer Selection
+    depth_map_layer: bpy.props.EnumProperty(
+        items=get_gp_layer_items,
+        name="GP Layer for Depth Map",
+        description="Select the Grease Pencil layer to use as the depth map input (Single Frame SDXL mode only)",
+        default=0,
+    )
+    # Denoise Strength
+    denoise_strength: bpy.props.FloatProperty(
+        name="Denoise Strength",
+        description="Amount of noise to add for img2img (Single Frame SDXL mode). 1.0 = max change, < 1.0 = keep more from base image.",
+        default=1.0, min=0.0, max=1.0,
+    )
     selected_lora: bpy.props.EnumProperty(
         items=get_lora_items,
         name="LoRA Model",
-        description="Select LoRA to use (Only for Current Frame mode)",
+        description="Select LoRA to use (Single Frame SDXL mode only)",
         default=0,
-    )
-    frame_start: bpy.props.IntProperty(
-        name="Start Frame", description="Starting frame number for range processing",
-        default=1, min=0,
-    )
-    frame_end: bpy.props.IntProperty(
-        name="End Frame", description="Ending frame number for range processing",
-        default=10, min=0,
-    )
-    frame_rate: bpy.props.IntProperty(
-        name="Video Frame Rate", description="Frame rate for temporary video sent to ComfyUI (multi-frame modes)",
-        default=8, min=1, max=120,
-    )
-    # --- New properties for multi-frame options ---
-    use_preceding_frame: bpy.props.BoolProperty(
-        name="Use Preceding Frame", description="Include frame before Start Frame in context (uses multiframe_depth+context workflow)",
-        default=False,
-    )
-    use_succeeding_frame: bpy.props.BoolProperty(
-        name="Use Succeeding Frame", description="Include frame after End Frame in context (uses multiframe_depth+context workflow)",
-        default=False,
-    )
-    reference_image_path: bpy.props.StringProperty(
-        name="Reference Image", description="Path to the reference image (used only if Frame Range selected and Context Frames are OFF - uses multiframe_depth+reference workflow)",
-        default="", subtype='FILE_PATH',
-    )
-    # --- Common settings ---
-    controlnet_depth_strength: bpy.props.FloatProperty(
-        name="ControlNet Strength", description="Strength of the ControlNet effect (primarily for Single Frame workflow)",
-        default=0.5, min=0.0, max=1.0, # Adjusted default
-    )
-    invert_depth_input: bpy.props.BoolProperty(
-        name="Invert Input", description="Invert the input image/video before processing (affects depth/control input)",
-        default=False, # Defaulting to False might be safer for depth
     )
     lora_strength_model: bpy.props.FloatProperty(
         name="LoRA Strength (Model)",
@@ -1689,11 +1926,47 @@ class ComfyUISceneProperties(bpy.types.PropertyGroup):
         default=1.0, min=0.0, max=2.0,
     )
 
+    # --- Multi-Frame Settings ---
+    frame_start: bpy.props.IntProperty(
+        name="Start Frame", description="Starting frame number for range processing",
+        default=1, min=0,
+    )
+    frame_end: bpy.props.IntProperty(
+        name="End Frame", description="Ending frame number for range processing",
+        default=10, min=0,
+    )
+    frame_rate: bpy.props.IntProperty(
+        name="Video Frame Rate", description="Frame rate for temporary video sent to ComfyUI (multi-frame modes)",
+        default=8, min=1, max=120,
+    )
+    use_preceding_frame: bpy.props.BoolProperty(
+        name="Use Preceding Frame", description="Include frame before Start Frame in context (uses multiframe_depth+context workflow)",
+        default=False,
+    )
+    use_succeeding_frame: bpy.props.BoolProperty(
+        name="Use Succeeding Frame", description="Include frame after End Frame in context (uses multiframe_depth+context workflow)",
+        default=False,
+    )
+    reference_image_path: bpy.props.StringProperty(
+        name="Reference Image", description="Path to the reference image (used only if Frame Range selected and Context Frames are OFF - uses multiframe_depth+reference workflow)",
+        default="", subtype='FILE_PATH',
+    )
+
+    # --- Common Control Settings ---
+    controlnet_depth_strength: bpy.props.FloatProperty(
+        name="ControlNet Strength", description="Strength of the ControlNet effect",
+        default=0.9, min=0.0, max=2.0, # <<< MODIFIED default/max for SDXL flexibility
+    )
+    invert_depth_input: bpy.props.BoolProperty(
+        name="Invert Input", description="Invert the depth map / control input image/video before processing",
+        default=False,
+    )
+
+
 # -------------------------------------------------------------------
-# Simple Operator to Cancel Modal (Unchanged)
+# Simple Operator to Cancel Modal
 # -------------------------------------------------------------------
 class WM_OT_ComfyUICancelModal(bpy.types.Operator):
-    """ Signals cancellation to the running modal operator """
     bl_idname = "wm.comfyui_cancel_modal"
     bl_label = "Cancel ComfyUI Operation"
     bl_description = "Stops the background ComfyUI process"
@@ -1744,8 +2017,8 @@ def register():
         startupinfo = None
         if os.name == "nt": startupinfo = subprocess.STARTUPINFO(); startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW; startupinfo.wShowWindow = subprocess.SW_HIDE
         subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True, timeout=5, startupinfo=startupinfo)
-        print("  ffmpeg found.")
-    except Exception: print("  Warning: ffmpeg check failed. Ensure it's installed and in PATH.")
+        print("  ffmpeg found (used for multi-frame).")
+    except Exception: print("  Warning: ffmpeg check failed. Ensure it's installed and in PATH if using multi-frame.")
 
     # Register classes
     for cls in classes:
@@ -1764,7 +2037,6 @@ def register():
     print(f"{bl_info['name']} Add-on registered successfully.")
     print("-" * 30)
 
-# Separate unregister function for error handling (Unchanged)
 def unregister_on_error():
     """ Attempts to unregister classes during error recovery. """
     print("Attempting to unregister partially registered classes...")
