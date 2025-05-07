@@ -227,10 +227,6 @@
       "end_image": [
         "204",
         0
-      ],
-      "control_images": [
-        "210",
-        0
       ]
     },
     "class_type": "WanVideoVACEStartToEndFrame",
@@ -305,67 +301,6 @@
       "title": "Video Combine 🎥🅥🅗🅢"
     }
   },
-  "184": {
-    "inputs": {
-      "video": "original_bad_apple.mp4",
-      "force_rate": 0,
-      "custom_width": 0,
-      "custom_height": 0,
-      "frame_load_cap": 24,
-      "skip_first_frames": 0,
-      "select_every_nth": 1,
-      "format": "AnimateDiff"
-    },
-    "class_type": "VHS_LoadVideo",
-    "_meta": {
-      "title": "Load Video (Upload) 🎥🅥🅗🅢"
-    }
-  },
-  "186": {
-    "inputs": {
-      "value": true
-    },
-    "class_type": "PrimitiveBoolean",
-    "_meta": {
-      "title": "Invert input"
-    }
-  },
-  "187": {
-    "inputs": {
-      "condition": "A is TRUE",
-      "require_inputs": true,
-      "NOT": false,
-      "custom_expression": "",
-      "A": [
-        "186",
-        0
-      ],
-      "TRUE_IN": [
-        "189",
-        0
-      ],
-      "FALSE_IN": [
-        "184",
-        0
-      ]
-    },
-    "class_type": "IfConditionSelector",
-    "_meta": {
-      "title": "🔀 IF (Condition Selector)"
-    }
-  },
-  "189": {
-    "inputs": {
-      "image": [
-        "184",
-        0
-      ]
-    },
-    "class_type": "ImageInvert",
-    "_meta": {
-      "title": "Invert Image"
-    }
-  },
   "191": {
     "inputs": {
       "value": true
@@ -419,10 +354,6 @@
       "start_image": [
         "203",
         0
-      ],
-      "control_images": [
-        "210",
-        0
       ]
     },
     "class_type": "WanVideoVACEStartToEndFrame",
@@ -436,10 +367,6 @@
       "empty_frame_level": 0,
       "end_image": [
         "204",
-        0
-      ],
-      "control_images": [
-        "210",
         0
       ]
     },
@@ -557,53 +484,6 @@
     "class_type": "SaveImage",
     "_meta": {
       "title": "Save Image"
-    }
-  },
-  "207": {
-    "inputs": {
-      "low_threshold": 0.4000000000000001,
-      "high_threshold": 0.8,
-      "image": [
-        "187",
-        0
-      ]
-    },
-    "class_type": "Canny",
-    "_meta": {
-      "title": "Canny"
-    }
-  },
-  "209": {
-    "inputs": {
-      "value": false
-    },
-    "class_type": "PrimitiveBoolean",
-    "_meta": {
-      "title": "Use canny (true = canny, false = depth)"
-    }
-  },
-  "210": {
-    "inputs": {
-      "condition": "A is TRUE",
-      "require_inputs": true,
-      "NOT": false,
-      "custom_expression": "",
-      "A": [
-        "209",
-        0
-      ],
-      "TRUE_IN": [
-        "207",
-        0
-      ],
-      "FALSE_IN": [
-        "187",
-        0
-      ]
-    },
-    "class_type": "IfConditionSelector",
-    "_meta": {
-      "title": "🔀 IF (Condition Selector)"
     }
   }
 }

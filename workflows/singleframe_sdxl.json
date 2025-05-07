@@ -1,7 +1,7 @@
 {
   "1": {
     "inputs": {
-      "ckpt_name": "waiNSFWIllustrious_v130.safetensors"
+      "ckpt_name": "illustriousXL10_v10.safetensors"
     },
     "class_type": "CheckpointLoaderSimple",
     "_meta": {
@@ -36,7 +36,7 @@
   },
   "6": {
     "inputs": {
-      "seed": 336475458667755,
+      "seed": 539804907747028,
       "steps": 20,
       "cfg": 4,
       "sampler_name": "euler_ancestral",
@@ -126,7 +126,7 @@
   },
   "14": {
     "inputs": {
-      "strength": 0.9000000000000001,
+      "strength": 1.0000000000000002,
       "start_percent": 0,
       "end_percent": 1,
       "positive": [
@@ -142,7 +142,7 @@
         0
       ],
       "image": [
-        "16",
+        "24",
         0
       ]
     },
@@ -160,28 +160,10 @@
       "title": "Load Advanced ControlNet Model 🛂🅐🅒🅝"
     }
   },
-  "16": {
-    "inputs": {
-      "width": 1440,
-      "height": 1080,
-      "interpolation": "nearest",
-      "method": "stretch",
-      "condition": "always",
-      "multiple_of": 0,
-      "image": [
-        "20",
-        0
-      ]
-    },
-    "class_type": "ImageResize+",
-    "_meta": {
-      "title": "🔧 Image Resize"
-    }
-  },
   "17": {
     "inputs": {
       "pixels": [
-        "23",
+        "22",
         0
       ],
       "vae": [
@@ -261,22 +243,51 @@
       "title": "Load Image (Path) (Base image Img2Img)🎥🅥🅗🅢"
     }
   },
-  "23": {
+  "24": {
     "inputs": {
-      "width": 1440,
-      "height": 1080,
-      "interpolation": "nearest",
-      "method": "stretch",
-      "condition": "always",
-      "multiple_of": 0,
-      "image": [
-        "22",
+      "condition": "A is TRUE",
+      "require_inputs": true,
+      "NOT": false,
+      "custom_expression": "",
+      "A": [
+        "26",
+        0
+      ],
+      "TRUE_IN": [
+        "27",
+        0
+      ],
+      "FALSE_IN": [
+        "20",
         0
       ]
     },
-    "class_type": "ImageResize+",
+    "class_type": "IfConditionSelector",
     "_meta": {
-      "title": "🔧 Image Resize"
+      "title": "🔀 IF (Condition Selector)"
+    }
+  },
+  "26": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Use canny (true = canny, false = depth)"
+    }
+  },
+  "27": {
+    "inputs": {
+      "low_threshold": 0.4000000000000001,
+      "high_threshold": 0.8,
+      "image": [
+        "20",
+        0
+      ]
+    },
+    "class_type": "Canny",
+    "_meta": {
+      "title": "Canny"
     }
   }
 }

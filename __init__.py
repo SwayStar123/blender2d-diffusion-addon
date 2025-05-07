@@ -90,6 +90,7 @@ WORKFLOW_NODE_IDS = {
         "KSAMPLER_DENOISE": "6",        # KSampler (denoise input)
         "OUTPUT_DECODE": "8",           # PreviewImage (after VAE Decode)
         "SAMPLER_SEED": "6",            # KSampler (seed input)
+        "USE_CANNY_BOOL": "26",         # PrimitiveBoolean (controls Canny vs Depth path)
         # Unused for now
         "CHECKPOINT_LOADER": "1",
         "CONTROLNET_LOADER": "15",      # ACN_ControlNetLoaderAdvanced
@@ -113,6 +114,8 @@ WORKFLOW_NODE_IDS = {
         "USE_PRECEDING_BOOL": "191",
         "USE_SUCCEEDING_BOOL": "192",
         "INVERT_BOOL": "186",
+        "USE_CANNY_BOOL": "209", # PrimitiveBoolean node for selecting Canny vs Depth
+        "VACE_STRENGTH": "56", # WanVideoVACEEncode node's strength input
         "OUTPUT_DECODE": "205",
         "VACE_STARTEND_1": "111",
         "VACE_STARTEND_2": "194",
@@ -758,6 +761,9 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
     scene_use_succeeding: bpy.props.BoolProperty(options={"SKIP_SAVE"})
     preceding_frame_path: bpy.props.StringProperty(options={"SKIP_SAVE"})
     succeeding_frame_path: bpy.props.StringProperty(options={"SKIP_SAVE"})
+    scene_seed: bpy.props.IntProperty(options={"SKIP_SAVE"}) # Stores the seed value passed to the thread
+    scene_use_canny_singleframe: bpy.props.BoolProperty(options={"SKIP_SAVE"}) # Store the use_canny boolean for the single frame SDXL workflow
+    scene_use_canny_control: bpy.props.BoolProperty(options={"SKIP_SAVE"}) # Store the use_canny boolean for the multi-context workflow
 
     def _get_first_lora_fallback(self, context):
         items = get_lora_items(self, context)
@@ -907,10 +913,9 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                  else: print(f"  Warning: Invert Bool Node ID '{invert_node_id}' not found/invalid.")
 
             # ControlNet Strength
-            if "CNET_STRENGTH" in self.node_ids:
+            if self.workflow_type == "SINGLE_SDXL" and "CNET_STRENGTH" in self.node_ids:
                  cn_strength_node_id = self.node_ids["CNET_STRENGTH"]
                  if cn_strength_node_id in self.workflow and "inputs" in self.workflow[cn_strength_node_id]:
-                      # SDXL ACN node uses 'strength', SD1.5 CNetApplyAdvanced also uses 'strength'
                       if "strength" in self.workflow[cn_strength_node_id]["inputs"]:
                           self.workflow[cn_strength_node_id]["inputs"]["strength"] = self.scene_depth_strength
                           print(f"  Set ControlNet Strength (Node {cn_strength_node_id}): {self.scene_depth_strength}")
@@ -952,6 +957,30 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                 else:
                     print(f"  Warning: LoRA Loader Node ID '{lora_node_id}' not found in workflow.")
 
+            # --- Handle Seed ---
+            sampler_node_id = self.node_ids.get("SAMPLER_SEED")
+            if sampler_node_id and sampler_node_id in self.workflow:
+                sampler_inputs = self.workflow[sampler_node_id]["inputs"]
+                if "seed" in sampler_inputs:
+                    user_seed = self.scene_seed # Get seed stored from invoke
+                    final_seed = 0
+                    if user_seed == -1:
+                        # Generate a random seed (use a large range typical for seeds)
+                        # Using system random for better randomness if available
+                        try:
+                            final_seed = random.SystemRandom().randint(0, 2**32 - 1)
+                            print(f"  Using Random Seed (SystemRandom, Node {sampler_node_id}): {final_seed}")
+                        except NotImplementedError: # Fallback for systems without SystemRandom
+                            final_seed = random.randint(0, 2**32 - 1)
+                            print(f"  Using Random Seed (random.randint, Node {sampler_node_id}): {final_seed}")
+                    else:
+                        final_seed = user_seed
+                        print(f"  Using User Seed (Node {sampler_node_id}): {final_seed}")
+                    sampler_inputs["seed"] = final_seed
+                else:
+                    print(f"  Warning: 'seed' input not found in Sampler Node {sampler_node_id}.")
+            else:
+                print(f"  Warning: Sampler Seed Node ID '{sampler_node_id}' not configured or found in workflow.")
 
             # --- 3) Set Workflow-Specific Parameters (Multi-frame) ---
             if self.workflow_type == "MULTI_REF":
@@ -1000,6 +1029,25 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                      else: print(f"  Warning: Use Succeeding Bool Node ID '{use_succ_node_id}' not found/invalid.")
                 else: print(f"  Warning: Use Succeeding Bool Node ID not defined.")
 
+                # Set Use Canny Bool
+                if "USE_CANNY_BOOL" in self.node_ids:
+                     use_canny_node_id = self.node_ids["USE_CANNY_BOOL"]
+                     if use_canny_node_id in self.workflow and "inputs" in self.workflow[use_canny_node_id] and "value" in self.workflow[use_canny_node_id]["inputs"]:
+                          self.workflow[use_canny_node_id]["inputs"]["value"] = self.scene_use_canny_control
+                          print(f"  Set Use Canny Bool (Node {use_canny_node_id}): {self.scene_use_canny_control}")
+                     else: print(f"  Warning: Use Canny Bool Node ID '{use_canny_node_id}' not found/invalid.")
+                else: print(f"  Warning: Use Canny Bool Node ID not defined.")
+
+                # Set VACE Strength using the ControlNet strength property
+                if "VACE_STRENGTH" in self.node_ids:
+                     vace_strength_node_id = self.node_ids["VACE_STRENGTH"]
+                     if vace_strength_node_id in self.workflow and "inputs" in self.workflow[vace_strength_node_id] and "strength" in self.workflow[vace_strength_node_id]["inputs"]:
+                          self.workflow[vace_strength_node_id]["inputs"]["strength"] = self.scene_depth_strength # Use the same property as ControlNet Strength
+                          print(f"  Set VACE Strength (Node {vace_strength_node_id}): {self.scene_depth_strength}")
+                     else: print(f"  Warning: VACE Strength Node ID '{vace_strength_node_id}' not found or missing 'strength' input.")
+                else: print(f"  Warning: VACE Strength Node ID not defined.")
+
+
                 if "VACE_STARTEND_1" in self.node_ids and "VACE_STARTEND_2" in self.node_ids and "VACE_STARTEND_3" in self.node_ids:
                     num_frames = len(self.frames_to_process) + int(self.scene_use_succeeding)
                     print(f"Set num_frames to: {num_frames}. Frames to process: {self.frames_to_process}")
@@ -1008,6 +1056,14 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                     self.workflow[self.node_ids["VACE_STARTEND_3"]]["inputs"]["num_frames"] = num_frames
                 else: print(f"  Warning: VACE_STARTEND Node IDs not defined")
 
+            # Add logic to set the Canny boolean (node 26) for the SINGLE_SDXL workflow.
+            elif self.workflow_type == "SINGLE_SDXL":
+                 # Set Use Canny Bool for Single Frame SDXL (using node 26)
+                 canny_bool_node_id = self.node_ids.get("USE_CANNY_BOOL") # This mapping is now also for SINGLE_SDXL (26)
+                 if canny_bool_node_id and canny_bool_node_id in self.workflow and "inputs" in self.workflow[canny_bool_node_id] and "value" in self.workflow[canny_bool_node_id]["inputs"]:
+                      self.workflow[canny_bool_node_id]["inputs"]["value"] = self.scene_use_canny_singleframe
+                      print(f"  Set Use Canny Bool (Node {canny_bool_node_id}) for SINGLE_SDXL: {self.scene_use_canny_singleframe}")
+                 else: print(f"  Warning: Use Canny Bool Node ID '{canny_bool_node_id}' not found/invalid in SINGLE_SDXL workflow.")
 
             # --- 4) Queue and Wait ---
             self._thread_status = f"Queueing ComfyUI ({self.workflow_type})"
@@ -1312,9 +1368,9 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
         # Store settings for the thread
         self.scene_user_prompt = scene_props.user_prompt
-        self.scene_negative_prompt = scene_props.negative_prompt # <<< NEW
-        self.scene_denoise_strength = scene_props.denoise_strength # <<< NEW
-        self.scene_depth_map_layer = scene_props.depth_map_layer # <<< NEW
+        self.scene_negative_prompt = scene_props.negative_prompt
+        self.scene_denoise_strength = scene_props.denoise_strength
+        self.scene_depth_map_layer = scene_props.depth_map_layer
         self.scene_frame_rate = scene_props.frame_rate
         self.scene_depth_strength = scene_props.controlnet_depth_strength # CN Strength
         self.scene_invert_depth = scene_props.invert_depth_input
@@ -1324,6 +1380,9 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         self.selected_lora_name = scene_props.selected_lora
         self.selected_lora_strength_model = scene_props.lora_strength_model
         self.selected_lora_strength_clip = scene_props.lora_strength_clip
+        self.scene_seed = scene_props.seed # Store scene seed
+        self.scene_use_canny_control = scene_props.use_canny_control
+        self.scene_use_canny_singleframe = scene_props.use_canny_singleframe # for SINGLE_SDXL
 
         # Store current state
         self.original_frame = context.scene.frame_current
@@ -1397,7 +1456,8 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                      # Allow some optional/alternative nodes to be missing
                      optional_keys = ["OUTPUT_DECODE", "VIDEO_COMBINE", "NEGATIVE_PROMPT",
                                       "CHECKPOINT_LOADER", "CONTROLNET_LOADER",
-                                      "VAE_ENCODE_BASE", "RESIZE_DEPTH", "RESIZE_BASE"] # <<< MODIFIED Allow more optional
+                                      "VAE_ENCODE_BASE", "RESIZE_DEPTH", "RESIZE_BASE",
+                                      "SAMPLER_SEED"]
                      if key not in optional_keys:
                          raise ValueError(f"Workflow {workflow_filename} missing expected node ID for '{key}': {node_id}")
                      else:
@@ -1709,8 +1769,8 @@ class PREFERENCES_OT_open_comfyui_addon_prefs(bpy.types.Operator):
 # PANEL: UI in the 3D View sidebar
 # -------------------------------------------------------------------
 class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
-    bl_label = "ComfyUI GP Gen v3.1 (SDXL)" # <<< MODIFIED
-    bl_idname = "VIEW3D_PT_comfyui_gp_panel_v3" # Keep ID same for continuity
+    bl_label = "ComfyUI GP Gen v3.1 (SDXL)"
+    bl_idname = "VIEW3D_PT_comfyui_gp_panel_v3"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "ComfyUI"
@@ -1785,6 +1845,11 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
             row_context.prop(scene_props, "use_preceding_frame", text="Use Preceding", toggle=True, icon='TRIA_LEFT')
             row_context.prop(scene_props, "use_succeeding_frame", text="Use Succeeding", toggle=True, icon='TRIA_RIGHT')
 
+            box_control = box.box()
+            box_control.label(text="Control Type:")
+            box_control.prop(scene_props, "use_canny_control", text="Convert to canny edges")
+
+
             # --- Reference Image Option ---
             if not scene_props.use_preceding_frame and not scene_props.use_succeeding_frame:
                  box_ref = box.box()
@@ -1812,22 +1877,22 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
                 row_lora_str.prop(scene_props, "lora_strength_model", text="Model")
                 row_lora_str.prop(scene_props, "lora_strength_clip", text="CLIP")
 
+            box_canny_single = box_sdxl.box()
+            box_canny_single.label(text="Control Input Type:")
+            box_canny_single.prop(scene_props, "use_canny_singleframe", text="Convert GP Layer to Canny Edges")
+
         col.separator()
 
         # --- Common Settings ---
         box_common = col.box()
         box_common.label(text="Common Control Settings:")
-        box_common.prop(scene_props, "invert_depth_input", text="Invert Depth/Control Input")
+        box_common.prop(scene_props, "invert_depth_input", text="Invert Control Input")
         # ControlNet Strength (applies to all workflows with a CNet node)
-        box_common.prop(scene_props, "controlnet_depth_strength", text="ControlNet Strength")
-        # Disable CN strength if multi-frame? Or keep it enabled? Let's keep enabled for now.
-        # row = box_common.row()
-        # row.prop(scene_props, "controlnet_depth_strength", text="ControlNet Strength")
-        # row.enabled = (scene_props.frame_mode == "CURRENT") # Example if disabling needed
+        box_common.prop(scene_props, "controlnet_depth_strength", text="Control Strength")
+        box_common.prop(scene_props, "seed")
 
         layout.separator()
         layout.operator(PREFERENCES_OT_open_comfyui_addon_prefs.bl_idname, text="Settings", icon="PREFERENCES")
-
 
 # -------------------------------------------------------------------
 # HELPER: Dynamic Enum Getters
@@ -1951,15 +2016,31 @@ class ComfyUISceneProperties(bpy.types.PropertyGroup):
         name="Reference Image", description="Path to the reference image (used only if Frame Range selected and Context Frames are OFF - uses multiframe_depth+reference workflow)",
         default="", subtype='FILE_PATH',
     )
+    use_canny_control: bpy.props.BoolProperty( # Canny vs Depth control
+        name="Use Canny Control", description="Use Canny edges from the GP Layer as the control input (Multiframe Range modes)",
+        default=False, # Default to Depth (false) as in the workflow JSON
+    )
+    use_canny_singleframe: bpy.props.BoolProperty(
+        name="Use Canny Edges (Single Frame)",
+        description="If enabled, the selected GP Layer will be converted to Canny edges before being used as ControlNet input in Single Frame SDXL mode. If disabled, it's used directly as depth.",
+        default=False, # Default to Depth control (as in the original workflow JSON node 26)
+    )
 
     # --- Common Control Settings ---
     controlnet_depth_strength: bpy.props.FloatProperty(
         name="ControlNet Strength", description="Strength of the ControlNet effect",
-        default=0.9, min=0.0, max=2.0, # <<< MODIFIED default/max for SDXL flexibility
+        default=1.0, min=0.0, max=2.0,
     )
     invert_depth_input: bpy.props.BoolProperty(
         name="Invert Input", description="Invert the depth map / control input image/video before processing",
         default=False,
+    )
+    seed: bpy.props.IntProperty(
+        name="Seed",
+        description="Sampler seed (-1 for random on each run)",
+        default=-1,
+        min=-1, # Allow -1 for random
+        soft_max=(2**16)-1,
     )
 
 
