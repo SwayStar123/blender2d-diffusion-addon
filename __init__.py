@@ -74,7 +74,9 @@ WORKFLOW_DIR = os.path.join(os.path.dirname(__file__), "workflows")
 WORKFLOW_FILES = {
     "SINGLE_SDXL": "singleframe_sdxl.json",
     "MULTI_REF": "multiframe_depth+reference.json",
-    "MULTI_CONTEXT": "multiframe_depth+context.json",
+    # "MULTI_CONTEXT": "multiframe_depth+context.json",
+    "MULTI_CONTEXT_DEPTH_CN": "multiframe_depth+context.json",
+    "MULTI_CONTEXT_NO_CN": "multiframe+context.json",
 }
 
 # Define KEY node IDs for each workflow type. VERIFY THESE CAREFULLY.
@@ -106,7 +108,7 @@ WORKFLOW_NODE_IDS = {
         "OUTPUT_DECODE": "190",
         "SAMPLER_SEED": "172",          # WanVideoSampler (seed input)
     },
-    "MULTI_CONTEXT": {
+    "MULTI_CONTEXT_DEPTH_CN": {
         "PROMPT": "16",
         "INPUT_VIDEO": "184",
         "PRECEDING_IMAGE": "203",
@@ -120,6 +122,19 @@ WORKFLOW_NODE_IDS = {
         "VACE_STARTEND_1": "111",
         "VACE_STARTEND_2": "194",
         "VACE_STARTEND_3": "195",
+        "SAMPLER_SEED": "70",           # WanVideoSampler (seed input)
+    },
+    "MULTI_CONTEXT_NO_CN": { # New workflow, uses multiframe+context.json
+        "PROMPT": "16",
+        "PRECEDING_IMAGE": "203",       # Path to captured start frame
+        "SUCCEEDING_IMAGE": "204",       # Path to captured end frame
+        "USE_PRECEDING_BOOL": "191",
+        "USE_SUCCEEDING_BOOL": "192",
+        "VACE_STRENGTH": "56",          # WanVideoVACEEncode 'strength'
+        "OUTPUT_DECODE": "205",         # SaveImage node
+        "VACE_STARTEND_1": "111",       # WanVideoVACEStartToEndFrame (num_frames input)
+        "VACE_STARTEND_2": "194",       # WanVideoVACEStartToEndFrame (num_frames input)
+        "VACE_STARTEND_3": "195",       # WanVideoVACEStartToEndFrame (num_frames input)
         "SAMPLER_SEED": "70",           # WanVideoSampler (seed input)
     }
 }
@@ -754,6 +769,8 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
     scene_denoise_strength: bpy.props.FloatProperty(options={"SKIP_SAVE"})
     scene_depth_map_layer: bpy.props.StringProperty(options={"SKIP_SAVE"})
     scene_frame_rate: bpy.props.IntProperty(options={"SKIP_SAVE"})
+    scene_frame_start_stored: bpy.props.IntProperty(options={"SKIP_SAVE"})
+    scene_frame_end_stored: bpy.props.IntProperty(options={"SKIP_SAVE"})
     scene_depth_strength: bpy.props.FloatProperty(options={"SKIP_SAVE"}) # ControlNet strength
     scene_invert_depth: bpy.props.BoolProperty(options={"SKIP_SAVE"})
     scene_reference_image_path: bpy.props.StringProperty(options={"SKIP_SAVE"})
@@ -822,18 +839,27 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         else: # RANGE
              # Check multi-frame workflows exist
              wf_ref = WORKFLOW_FILES.get("MULTI_REF")
-             wf_ctx = WORKFLOW_FILES.get("MULTI_CONTEXT")
+             wf_ctx_depth_cn = WORKFLOW_FILES.get("MULTI_CONTEXT_DEPTH_CN")
+             wf_ctx_no_cn = WORKFLOW_FILES.get("MULTI_CONTEXT_NO_CN")
              missing_multi = []
              if not wf_ref or not os.path.exists(os.path.join(WORKFLOW_DIR, wf_ref)): missing_multi.append(wf_ref)
-             if not wf_ctx or not os.path.exists(os.path.join(WORKFLOW_DIR, wf_ctx)): missing_multi.append(wf_ctx)
+             if not wf_ctx_depth_cn or not os.path.exists(os.path.join(WORKFLOW_DIR, wf_ctx_depth_cn)): missing_multi.append(wf_ctx_depth_cn)
+             if not wf_ctx_no_cn or not os.path.exists(os.path.join(WORKFLOW_DIR, wf_ctx_no_cn)): missing_multi.append(wf_ctx_no_cn)
              if missing_multi: cls.poll_message_set(f"Missing workflows: {', '.join(missing_multi)}"); return False
-             # Check reference image if needed
-             if not scene_props.use_preceding_frame and not scene_props.use_succeeding_frame:
+
+             # Check reference image if needed (only for MULTI_REF mode)
+             if not scene_props.use_preceding_frame and not scene_props.use_succeeding_frame: # This implies MULTI_REF mode
                  ref_path = bpy.path.abspath(scene_props.reference_image_path) if scene_props.reference_image_path else ""
-                 if not ref_path or not os.path.exists(ref_path): cls.poll_message_set("Reference image path required/invalid"); return False
+                 if not ref_path or not os.path.exists(ref_path): cls.poll_message_set("Reference image path required/invalid for Ref mode"); return False
+
+             # For context modes, GP layer is needed if using MULTI_CONTEXT_DEPTH_CN
+             if scene_props.use_preceding_frame or scene_props.use_succeeding_frame:
+                 if scene_props.multiframe_use_controlnet_context: # Only check GP layer if using depth/canny context
+                    if not gp_layer_valid:
+                        # Message already set by earlier `gp_layer_valid` block if it's invalid
+                        return False
 
         return True
-
 
     def _comfyui_worker_thread(self):
         """ Worker thread: Creates video (if needed), modifies workflow, queues, waits for results. """
@@ -853,8 +879,13 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                 print(f"  Depth Map:  {abs_depth_path}")
                 self.workflow[self.node_ids["INPUT_IMAGE_BASE"]]["inputs"]["image"] = abs_base_path
                 self.workflow[self.node_ids["INPUT_IMAGE_DEPTH"]]["inputs"]["image"] = abs_depth_path
+            elif self.workflow_type == "MULTI_CONTEXT_NO_CN":
+                # For MULTI_CONTEXT_NO_CN, no depth video is created.
+                # Paths for preceding/succeeding images are set directly later.
+                print("MULTI_CONTEXT_NO_CN: Skipping depth video creation.")
+                # self.temp_video_path remains None
             else: # MULTI_REF or MULTI_CONTEXT
-                self._thread_status = "Creating temporary video (from Depth Layers)..." # <<< MODIFIED Status
+                self._thread_status = "Creating temporary video (from Depth Layers)..."
                 self._thread_progress = ""
                 start_num = self.frames_to_process[0] if self.frames_to_process else 0
                 video_filename = f"input_video_{start_num}.mp4" # Keep filename generic
@@ -882,11 +913,11 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                 prompt_node_id = self.node_ids["PROMPT"]
                 if prompt_node_id in self.workflow and "inputs" in self.workflow[prompt_node_id]:
                      # Assumes 'text' input for SDXL CLIPTextEncode too
-                     if "text" in self.workflow[prompt_node_id]["inputs"]:
+                    if "text" in self.workflow[prompt_node_id]["inputs"]:
                          self.workflow[prompt_node_id]["inputs"]["text"] = self.scene_user_prompt
                          print(f"  Set Positive Prompt (Node {prompt_node_id}): {self.scene_user_prompt[:30]}...")
                      # Handle WanVideoTextEncode for multi-frame if different key needed
-                     elif self.workflow_type in ["MULTI_REF", "MULTI_CONTEXT"] and "positive_prompt" in self.workflow[prompt_node_id]["inputs"]:
+                    elif self.workflow_type in ["MULTI_REF", "MULTI_CONTEXT"] and "positive_prompt" in self.workflow[prompt_node_id]["inputs"]:
                           self.workflow[prompt_node_id]["inputs"]["positive_prompt"] = self.scene_user_prompt
                           print(f"  Set Positive Prompt (Node {prompt_node_id}): {self.scene_user_prompt[:30]}...")
                 else: print(f"  Warning: Positive Prompt Node ID '{prompt_node_id}' not found.")
@@ -994,7 +1025,7 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                         print(f"  Set Reference Image (Node {ref_img_node_id}): {abs_ref_path}")
                 else: print(f"  Warning: Reference Image Node ID not defined for MULTI_REF workflow.")
 
-            elif self.workflow_type == "MULTI_CONTEXT":
+            elif self.workflow_type == "MULTI_CONTEXT_DEPTH_CN":
                 if "PRECEDING_IMAGE" in self.node_ids:
                      prec_img_node_id = self.node_ids["PRECEDING_IMAGE"]
                      if self.preceding_frame_path and os.path.exists(self.preceding_frame_path):
@@ -1049,12 +1080,60 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
 
                 if "VACE_STARTEND_1" in self.node_ids and "VACE_STARTEND_2" in self.node_ids and "VACE_STARTEND_3" in self.node_ids:
-                    num_frames = len(self.frames_to_process) + int(self.scene_use_succeeding)
-                    print(f"Set num_frames to: {num_frames}. Frames to process: {self.frames_to_process}")
-                    self.workflow[self.node_ids["VACE_STARTEND_1"]]["inputs"]["num_frames"] = num_frames
-                    self.workflow[self.node_ids["VACE_STARTEND_2"]]["inputs"]["num_frames"] = num_frames
-                    self.workflow[self.node_ids["VACE_STARTEND_3"]]["inputs"]["num_frames"] = num_frames
+                    num_vace_frames = len(self.frames_to_process) + int(self.scene_use_succeeding)
+                    print(f"Set num_frames to: {num_vace_frames}. Frames to process: {self.frames_to_process}")
+                    self.workflow[self.node_ids["VACE_STARTEND_1"]]["inputs"]["num_frames"] = num_vace_frames
+                    self.workflow[self.node_ids["VACE_STARTEND_2"]]["inputs"]["num_frames"] = num_vace_frames
+                    self.workflow[self.node_ids["VACE_STARTEND_3"]]["inputs"]["num_frames"] = num_vace_frames
                 else: print(f"  Warning: VACE_STARTEND Node IDs not defined")
+
+            elif self.workflow_type == "MULTI_CONTEXT_NO_CN":
+                # Logic for the new MULTI_CONTEXT_NO_CN workflow
+                if "PRECEDING_IMAGE" in self.node_ids:
+                     prec_img_node_id = self.node_ids["PRECEDING_IMAGE"]
+                     if self.preceding_frame_path and os.path.exists(self.preceding_frame_path):
+                          abs_prec_path = os.path.abspath(self.preceding_frame_path).replace("\\", "/")
+                          self.workflow[prec_img_node_id]["inputs"]["image"] = abs_prec_path
+                          print(f"  Set Preceding Image (Node {prec_img_node_id}): {abs_prec_path}")
+                     # If not self.scene_use_preceding, path might be None, workflow should handle it or bool below controls
+                else: print(f"  Warning: Preceding Image Node ID not defined for MULTI_CONTEXT_NO_CN.")
+
+                if "SUCCEEDING_IMAGE" in self.node_ids:
+                     succ_img_node_id = self.node_ids["SUCCEEDING_IMAGE"]
+                     if self.succeeding_frame_path and os.path.exists(self.succeeding_frame_path):
+                          abs_succ_path = os.path.abspath(self.succeeding_frame_path).replace("\\", "/")
+                          self.workflow[succ_img_node_id]["inputs"]["image"] = abs_succ_path
+                          print(f"  Set Succeeding Image (Node {succ_img_node_id}): {abs_succ_path}")
+                else: print(f"  Warning: Succeeding Image Node ID not defined for MULTI_CONTEXT_NO_CN.")
+
+                if "USE_PRECEDING_BOOL" in self.node_ids:
+                     use_prec_node_id = self.node_ids["USE_PRECEDING_BOOL"]
+                     if use_prec_node_id in self.workflow and "inputs" in self.workflow[use_prec_node_id]:
+                          self.workflow[use_prec_node_id]["inputs"]["value"] = self.scene_use_preceding
+                          print(f"  Set Use Preceding Bool (Node {use_prec_node_id}): {self.scene_use_preceding}")
+                if "USE_SUCCEEDING_BOOL" in self.node_ids:
+                     use_succ_node_id = self.node_ids["USE_SUCCEEDING_BOOL"]
+                     if use_succ_node_id in self.workflow and "inputs" in self.workflow[use_succ_node_id]:
+                          self.workflow[use_succ_node_id]["inputs"]["value"] = self.scene_use_succeeding
+                          print(f"  Set Use Succeeding Bool (Node {use_succ_node_id}): {self.scene_use_succeeding}")
+
+                # VACE Strength
+                if "VACE_STRENGTH" in self.node_ids:
+                     vace_strength_node_id = self.node_ids["VACE_STRENGTH"]
+                     if vace_strength_node_id in self.workflow and "inputs" in self.workflow[vace_strength_node_id] and "strength" in self.workflow[vace_strength_node_id]["inputs"]:
+                          self.workflow[vace_strength_node_id]["inputs"]["strength"] = self.scene_depth_strength
+                          print(f"  Set VACE Strength (Node {vace_strength_node_id}) for MULTI_CONTEXT_NO_CN: {self.scene_depth_strength}")
+
+                # num_frames for VACE nodes in MULTI_CONTEXT_NO_CN
+                if "VACE_STARTEND_1" in self.node_ids and "VACE_STARTEND_2" in self.node_ids and "VACE_STARTEND_3" in self.node_ids:
+                    # Calculate based on the timeline range the user wants to fill + context frames
+                    num_timeline_frames = (self.scene_frame_end_stored - self.scene_frame_start_stored + 1)
+                    num_vace_frames = num_timeline_frames + int(self.scene_use_preceding) + int(self.scene_use_succeeding)
+                    print(f"Set num_vace_frames for MULTI_CONTEXT_NO_CN to: {num_vace_frames}")
+                    self.workflow[self.node_ids["VACE_STARTEND_1"]]["inputs"]["num_frames"] = num_vace_frames
+                    self.workflow[self.node_ids["VACE_STARTEND_2"]]["inputs"]["num_frames"] = num_vace_frames
+                    self.workflow[self.node_ids["VACE_STARTEND_3"]]["inputs"]["num_frames"] = num_vace_frames
+                else: print(f"  Warning: VACE_STARTEND Node IDs not defined for MULTI_CONTEXT_NO_CN")
 
             # Add logic to set the Canny boolean (node 26) for the SINGLE_SDXL workflow.
             elif self.workflow_type == "SINGLE_SDXL":
@@ -1145,12 +1224,12 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
         # --- Adjust Image List based on Context Workflow (Multi-frame only) ---
         images_to_process = self.final_result
-        expected_frame_count = len(self.frames_to_process)
-        frames_for_gp = list(self.frames_to_process) # Copy the list
+        num_expected_timeline_frames = (self.scene_frame_end_stored - self.scene_frame_start_stored + 1)
+        frames_for_gp = list(self.frames_to_process)
 
         # Offset is because when using preceding frame, an extra frame is loaded, as the workflow replaces the first frame rather than adding it. (But it adds the last frame, so no adjustment needed there)
         offset = 0
-        if self.workflow_type == "MULTI_CONTEXT":
+        if self.workflow_type == "MULTI_CONTEXT_DEPTH_CN" or self.workflow_type == "MULTI_CONTEXT_NO_CN":
             print("Context workflow detected, adjusting output image list...")
             offset = int(self.scene_use_preceding)
             start_index = 0
@@ -1176,9 +1255,9 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
             print(f"  Sliced images: {len(images_to_process)} image(s) remain for GP references.")
 
-            if len(images_to_process) != expected_frame_count:
+            if len(images_to_process) != num_expected_timeline_frames:
                  print(f"  WARNING: Number of images after slicing ({len(images_to_process)}) "
-                       f"does not match the number of requested frames ({expected_frame_count}). "
+                       f"does not match the number of requested frames ({num_expected_timeline_frames}). "
                        f"GP frame assignment might be incorrect.")
                  if len(frames_for_gp) > len(images_to_process):
                       frames_for_gp = frames_for_gp[:len(images_to_process)]
@@ -1372,6 +1451,8 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         self.scene_denoise_strength = scene_props.denoise_strength
         self.scene_depth_map_layer = scene_props.depth_map_layer
         self.scene_frame_rate = scene_props.frame_rate
+        self.scene_frame_start_stored = scene_props.frame_start # Store for worker and execute_finish
+        self.scene_frame_end_stored = scene_props.frame_end # Store for worker and execute_finish
         self.scene_depth_strength = scene_props.controlnet_depth_strength # CN Strength
         self.scene_invert_depth = scene_props.invert_depth_input
         self.scene_reference_image_path = bpy.path.abspath(scene_props.reference_image_path) if scene_props.reference_image_path else ""
@@ -1413,10 +1494,13 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             end_f = scene_props.frame_end
             if start_f > end_f: self.report({"ERROR"}, "Start frame > End frame."); return {"CANCELLED"}
             # Take an extra frame for preceding, because the workflow replaces the first frame, but adds an additional last frame when specified, so no adjustment needed for succeeding.
-            self.frames_to_process = list(range(start_f - int(self.scene_use_preceding), end_f + 1))
+            self.frames_to_process = list(range(self.scene_frame_start_stored - int(self.scene_use_preceding), self.scene_frame_end_stored + 1))
 
             if self.scene_use_preceding or self.scene_use_succeeding:
-                self.workflow_type = "MULTI_CONTEXT"
+                if scene_props.multiframe_use_controlnet_context:
+                    self.workflow_type = "MULTI_CONTEXT_DEPTH_CN"
+                else:
+                    self.workflow_type = "MULTI_CONTEXT_NO_CN"
                 if self.scene_use_preceding:
                     preceding_frame_num = start_f - 1
                     if preceding_frame_num < 0:
@@ -1523,7 +1607,7 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
 
             wm.progress_end()
 
-        else: # MULTI_REF or MULTI_CONTEXT
+        else: # MULTI_REF, MULTI_CONTEXT_DEPTH_CN, or MULTI_CONTEXT_NO_CN
             # Check GP Layer selection is valid (already done by poll, but good double check)
             if not self.scene_depth_map_layer or self.scene_depth_map_layer == "NONE" or self.scene_depth_map_layer == "NO_GP_OBJECT" or self.scene_depth_map_layer == "NO_LAYERS" or self.scene_depth_map_layer not in gp_object.data.layers:
                  # This case should ideally be caught by poll, but if not...
@@ -1533,9 +1617,27 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                  return {"CANCELLED"}
 
             # --- Determine total steps for progress bar ---
-            total_capture_steps = len(self.frames_to_process) # GP layers for main sequence
-            if preceding_frame_num is not None: total_capture_steps += 1
-            if succeeding_frame_num is not None: total_capture_steps += 1
+            total_capture_steps = 0
+            if self.workflow_type == "MULTI_CONTEXT_NO_CN":
+                if preceding_frame_num is not None: total_capture_steps += 1
+                if succeeding_frame_num is not None: total_capture_steps += 1
+                # No depth layer sequence capture for this type
+            else: # MULTI_REF or MULTI_CONTEXT_DEPTH_CN
+                # Check GP Layer selection is valid
+                if not self.scene_depth_map_layer or self.scene_depth_map_layer == "NONE" or \
+                   self.scene_depth_map_layer == "NO_GP_OBJECT" or self.scene_depth_map_layer == "NO_LAYERS" or \
+                   (gp_object.data and self.scene_depth_map_layer not in gp_object.data.layers) : # Check gp_object.data exists
+                     self.report({"ERROR"}, f"Invalid GP Depth Layer selected for {self.workflow_type}: '{self.scene_depth_map_layer}'. Aborting.");
+                     # ... (cleanup and return CANCELLED) ...
+                     self._cleanup_temp_files()
+                     wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None)
+                     return {"CANCELLED"}
+
+                frames_for_depth_video_capture = list(range(self.scene_frame_start_stored - int(self.scene_use_preceding), self.scene_frame_end_stored + 1))
+                total_capture_steps = len(frames_for_depth_video_capture)
+                if self.workflow_type == "MULTI_CONTEXT_DEPTH_CN": # Only add context viewport captures for this one
+                    if preceding_frame_num is not None: total_capture_steps += 1
+                    if succeeding_frame_num is not None: total_capture_steps += 1
 
             self._thread_status = "Capturing Layers/Frames..."; self._thread_progress = ""
             wm.comfyui_modal_status = self._thread_status; wm.comfyui_modal_progress = self._thread_progress
@@ -1545,9 +1647,11 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
             progress_counter = 0
             self.frame_paths = {} # Reset / Init. Will store DEPTH paths for the video sequence.
 
-            # --- Capture Main Sequence (GP Layers for Depth Video) ---
-            for i, frame_num in enumerate(self.frames_to_process):
-                if not capture_success: break # Stop if previous step failed
+            # --- Capture Main Sequence (GP Layers for Depth Video, if applicable) ---
+            if self.workflow_type == "MULTI_REF" or self.workflow_type == "MULTI_CONTEXT_DEPTH_CN":
+                frames_for_depth_video_capture = list(range(self.scene_frame_start_stored - int(self.scene_use_preceding), self.scene_frame_end_stored + 1))
+                for i, frame_num in enumerate(frames_for_depth_video_capture): # Use this specific list for capture
+                    if not capture_success: break
                 frame_start_time = time.time()
                 context.scene.frame_set(frame_num)
                 current_step_info = f"Depth Layer {i+1}/{len(self.frames_to_process)} (Frame {frame_num})"
@@ -1568,7 +1672,10 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                     progress_counter += 1 # Increment counter even on failure? Yes, to reflect progress bar correctly
 
             # --- Capture Context Frames (Viewport) if needed and main capture succeeded ---
-            if capture_success and preceding_frame_num is not None:
+            # For MULTI_CONTEXT_DEPTH_CN, these viewport captures are for the separate LoadImage nodes in its workflow.
+            # For MULTI_CONTEXT_NO_CN, these are the *only* image inputs.
+            if capture_success and preceding_frame_num is not None and (self.workflow_type == "MULTI_CONTEXT_DEPTH_CN" or self.workflow_type == "MULTI_CONTEXT_NO_CN"):
+                 frame_start_time = time.time()
                  frame_start_time = time.time()
                  context.scene.frame_set(preceding_frame_num)
                  current_step_info = f"Context Frame {preceding_frame_num}"
@@ -1588,7 +1695,8 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
                  finally:
                       progress_counter += 1
 
-            if capture_success and succeeding_frame_num is not None:
+            if capture_success and succeeding_frame_num is not None and (self.workflow_type == "MULTI_CONTEXT_DEPTH_CN" or self.workflow_type == "MULTI_CONTEXT_NO_CN"):
+                 frame_start_time = time.time()
                  frame_start_time = time.time()
                  context.scene.frame_set(succeeding_frame_num)
                  current_step_info = f"Context Frame {succeeding_frame_num}"
@@ -1635,15 +1743,28 @@ class OBJECT_OT_run_comfyui_modal(bpy.types.Operator):
         if self.workflow_type == "SINGLE_SDXL":
              if not self.base_image_path or not self.depth_map_path:
                  self.report({"ERROR"}, "Missing captured base or depth map image for SDXL. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
-        else: # Multi-frame checks
-            for f_num in self.frames_to_process:
-                 if f_num not in self.frame_paths:
-                     self.report({"ERROR"}, f"Missing captured frame for main sequence: {f_num}. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
-            if self.workflow_type == "MULTI_CONTEXT":
+        elif self.workflow_type == "MULTI_CONTEXT_NO_CN":
+            # This workflow only needs preceding/succeeding if those bools are true
+            if self.scene_use_preceding and not self.preceding_frame_path:
+                self.report({"ERROR"}, "Preceding frame requested for MULTI_CONTEXT_NO_CN but failed to capture/find path. Aborting."); # ...
+                self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
+            if self.scene_use_succeeding and not self.succeeding_frame_path:
+                self.report({"ERROR"}, "Succeeding frame requested for MULTI_CONTEXT_NO_CN but failed to capture/find path. Aborting."); # ...
+                self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
+        else: # Multi-frame (MULTI_REF or MULTI_CONTEXT_DEPTH_CN) checks
+            # Check that all frames intended for the depth video were captured
+            frames_for_depth_video_capture_check = list(range(self.scene_frame_start_stored - int(self.scene_use_preceding), self.scene_frame_end_stored + 1))
+            for f_num in frames_for_depth_video_capture_check:
+                 if f_num not in self.frame_paths: # frame_paths stores depth captures
+                     self.report({"ERROR"}, f"Missing captured depth layer for frame: {f_num} (Workflow: {self.workflow_type}). Aborting."); # ...
+                     self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
+            if self.workflow_type == "MULTI_CONTEXT_DEPTH_CN": # This one also uses viewport context images
                  if self.scene_use_preceding and not self.preceding_frame_path:
-                     self.report({"ERROR"}, "Preceding frame requested but failed to capture/find path. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
+                     self.report({"ERROR"}, "Preceding frame requested for MULTI_CONTEXT_DEPTH_CN but failed to capture/find path. Aborting."); # ...
+                     self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
                  if self.scene_use_succeeding and not self.succeeding_frame_path:
-                     self.report({"ERROR"}, "Succeeding frame requested but failed to capture/find path. Aborting."); self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
+                     self.report({"ERROR"}, "Succeeding frame requested for MULTI_CONTEXT_DEPTH_CN but failed to capture/find path. Aborting."); # ...
+                     self._cleanup_temp_files(); wm.comfyui_modal_operator_running = False; wm.comfyui_modal_status = "Idle"; wm.comfyui_modal_progress = ""; context.workspace.status_text_set(None); return {"CANCELLED"}
 
         # --- Start Background Thread ---
         self._result_queue = queue.Queue()
@@ -1830,7 +1951,7 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
         # --- Frame Range Specific Options ---
         if scene_props.frame_mode == "RANGE":
             box = col.box()
-            box.label(text="Multi-Frame Settings:") # Clarify section
+            box.label(text="Multi-Frame Settings:")
             row = box.row(align=True)
             row.prop(scene_props, "frame_start", text="Start")
             row.prop(scene_props, "frame_end", text="End")
@@ -1840,18 +1961,24 @@ class VIEW3D_PT_comfyui_panel(bpy.types.Panel):
 
             # --- Context Frame Options ---
             box_context = box.box()
-            box_context.label(text="Context Frames (Uses 'Context' Workflow):")
+            box_context.label(text="Context Frames:")
             row_context = box_context.row(align=True)
             row_context.prop(scene_props, "use_preceding_frame", text="Use Preceding", toggle=True, icon='TRIA_LEFT')
             row_context.prop(scene_props, "use_succeeding_frame", text="Use Succeeding", toggle=True, icon='TRIA_RIGHT')
 
-            box_control = box.box()
-            box_control.label(text="Control Type:")
-            box_control.prop(scene_props, "use_canny_control", text="Convert to canny edges")
+            if scene_props.use_preceding_frame or scene_props.use_succeeding_frame:
+                # Options specific to when context mode is active
+                box_context_type = box_context.box()
+                box_context_type.prop(scene_props, "multiframe_use_controlnet_context") # Label from prop works fine
 
-
-            # --- Reference Image Option ---
-            if not scene_props.use_preceding_frame and not scene_props.use_succeeding_frame:
+                if scene_props.multiframe_use_controlnet_context:
+                    # Control Type (Canny) is only relevant for the ControlNet-based context workflow
+                    box_control_type_detail = box_context_type.box() # Indent under the checkbox
+                    box_control_type_detail.label(text="Control Input (for Depth/Canny Workflow):")
+                    box_control_type_detail.prop(scene_props, "use_canny_control", text="Convert GP Layer to Canny Edges")
+                # If not using ControlNet context, 'invert_depth_input' and 'controlnet_depth_strength'
+                # will apply to VACE strength or be ignored if not applicable by the worker thread.
+            else: # Neither preceding nor succeeding is checked, so use Reference workflow
                  box_ref = box.box()
                  box_ref.label(text="Reference Image (Uses 'Reference' Workflow):")
                  box_ref.prop(scene_props, "reference_image_path", text="")
@@ -2011,6 +2138,11 @@ class ComfyUISceneProperties(bpy.types.PropertyGroup):
     use_succeeding_frame: bpy.props.BoolProperty(
         name="Use Succeeding Frame", description="Include frame after End Frame in context (uses multiframe_depth+context workflow)",
         default=False,
+    )
+    multiframe_use_controlnet_context: bpy.props.BoolProperty(
+        name="Use ControlNet for Context",
+        description="If using context frames, TRUE uses the Depth/Canny ControlNet workflow, FALSE uses a workflow relying only on start/end frames without ControlNet",
+        default=True, # Default to existing behavior
     )
     reference_image_path: bpy.props.StringProperty(
         name="Reference Image", description="Path to the reference image (used only if Frame Range selected and Context Frames are OFF - uses multiframe_depth+reference workflow)",
